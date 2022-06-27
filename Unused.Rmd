@@ -1,0 +1,682 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+This is an [R Markdown](http://rmarkdown.rstudio.com) Notebook. When you execute code within the notebook, the results appear beneath the code. 
+
+Try executing this chunk by clicking the *Run* button within the chunk or by placing your cursor inside it and pressing *Ctrl+Shift+Enter*. 
+
+```{r}
+
+```
+
+Add a new chunk by clicking the *Insert Chunk* button on the toolbar or by pressing *Ctrl+Alt+I*.
+
+When you save the notebook, an HTML file containing the code and output will be saved alongside it (click the *Preview* button or press *Ctrl+Shift+K* to preview the HTML file).
+
+The preview shows you a rendered HTML copy of the contents of the editor. Consequently, unlike *Knit*, *Preview* does not run any R code chunks. Instead, the output of the chunk when it was last run in the editor is displayed.
+
+
+```{r}
+var_func <- function(beta.adj){
+  #calculating interindividual variation function
+  print("===calculating interindividual variation===")
+  #removing non-pair single samples
+  EPIC.individual_variation<- beta.adj[,order(names(beta.adj))]  %>% select(c(-S85_kidney_Meso, -S62_intestine_Endo, -S54_lung_Endo))
+  
+  individual_variation <- matrix(ncol = 0, nrow = as.integer(count(EPIC.individual_variation))) %>% as_tibble()
+  
+  for (a in seq(1,length(colnames(EPIC.individual_variation)), by=2)){
+    b = a+1
+    individual_variation <- individual_variation %>% add_column((abs(EPIC.individual_variation[a]+EPIC.individual_variation[b]))/2)
+  }
+  
+  individual_variation[, "interindividual_var"] <- 
+    apply(individual_variation[, 1:ncol(individual_variation)], 1, max) - apply(individual_variation[, 1:ncol(individual_variation)], 1, min)
+
+  #tissue variation calculation
+  print("===calculating tissue variation===")
+
+  tissue_var <- beta.adj %>% as_tibble()
+
+  Ecto <- tissue_var %>%  select(grep("Ecto", colnames(tissue_var)))
+  Endo <- tissue_var %>%  select(grep("Endo", colnames(tissue_var)))
+  Meso <- tissue_var %>%  select(grep("Meso", colnames(tissue_var)))
+
+  #germ mean calculation
+  tissue_var[, "Ecto_mean"] <- apply(Ecto, 1, mean)
+  tissue_var[, "Endo_mean"] <- apply(Endo, 1, mean)
+  tissue_var[, "Meso_mean"] <- apply(Meso, 1, mean)
+  
+  print("===final processes===")
+
+  #germ variation
+  Mean_values <- tissue_var %>%  select(grep("mean", colnames(tissue_var)))
+  tissue_var[, "germ_var"] <- apply(Mean_values, 1, max) - apply(Mean_values, 1, min)
+  
+  variationVB <- matrix(ncol=0, nrow=as.integer(count(tissue_var))) %>% as_tibble()
+  variationVB <- variationVB %>% add_column(individual_variation$interindividual_var)
+  variationVB <- variationVB %>% add_column(tissue_var$germ_var)
+  names(variationVB) <- c("interindividual_var", "germ_var")
+  
+  print("===Done!===")
+
+  return(variationVB)
+}
+
+```
+
+PCA by gestation periods
+```{r}
+beta.gest <- as_tibble(beta.adj) %>% select(c(-S83_rib_Meso, -S83_skin_Ecto)) #removing sample lacking gestational age value
+Sample_gestation <- SampleSheet_edited %>% filter(Gestational.age != "NA")
+
+list_gest <- matrix(c(Sample_gestation$Gestational.age, Sample_gestation$unique.identifier), 
+                nrow=2, ncol=as.integer(count(Sample_gestation)), byrow = TRUE)
+
+colnames(beta.gest) <- Sample_gestation$Gestational.age
+
+beta.gest <- beta.gest[,order(names(beta.gest))]
+
+gestation_mean = matrix(ncol = 0, nrow = 865049) %>% as_tibble()
+
+gestation_mean[, "9-10"] <- apply(beta.gest[, 44:55], 1, mean)
+gestation_mean[, "10-11"] <- apply(beta.gest[, 1:14], 1, mean)
+gestation_mean[, "11-12"] <- apply(beta.gest[, 15:24], 1, mean)
+gestation_mean[, "12-16"] <- apply(beta.gest[, 25:34], 1, mean)
+gestation_mean[, "17-18"] <- apply(beta.gest[, 35:43], 1, mean)
+
+pca_analysis_sdev(gestation_mean)
+
+```
+
+
+PCA PC for gestation mean
+```{r}
+pca_analysis_PC(gestation_mean)
+
+```
+
+
+450k probe variation graph
+```{r}
+Foetal_ICH_beta_mat_adjusted_450k <- readRDS("/home/linfeng/../../data/s1/fetal_EPIC_processed/Beta_matrices/Foetal_ICH_beta_mat_adjusted_450k.RDS")
+EPIC.norm.beta.DF.450k<- EPIC.norm.beta.DF[row.names(Foetal_ICH_beta_mat_adjusted_450k),]
+rm(Foetal_ICH_beta_mat_adjusted_450k)
+
+variationVB <- var_func1(EPIC.norm.beta.DF.450k)
+
+variance_vis_func(variationVB)
+```
+
+
+Max of each intra individual difference
+```{r}
+ggplot(variationVB + 
+  geom_boxplot()
+
+variationVB %>% arrange(desc(Ecto_Endo)) %>%  select(c(probes, Ecto_Endo)) %>% head()
+variationVB %>% arrange(desc(Ecto_Meso)) %>%  select(c(probes, Endo_Meso)) %>% head()
+variationVB %>% arrange(desc(Meso_Ecto)) %>%  select(c(probes, Meso_Ecto)) %>% head()
+
+
+```
+
+# Alternative way of graphing PC (using autoplot) - takes longer to run
+```{r}
+beta.adj.wide <-t(beta.adj) %>% as.data.frame() 
+beta.adj.wide <- beta.adj.wide %>% add_column(beta_PC$germlayer, beta_PC$tissue, beta_PC$unique_label, 
+                               beta_PC$gestation, beta_PC$sex, beta_PC$slide, beta_PC$row)
+
+
+autoplot(beta.pca, data = beta.adj.wide, colour = 'beta_PC$germlayer', loadings = FALSE, loadings.colour = 'blue',
+         loadings.label = FALSE, loadings.label.size = 0.1)
+
+
+```
+
+top10 first and that add variation threshold
+```{r}
+Top10_var <- variationVB %>% arrange(desc(interindividual_var)) %>% slice(1:as.integer(count(variationVB)/10))
+
+
+variance_vis_func(Top10_var)
+
+```
+
+
+#testing and formulation of erv nearest cpg function
+```{r}
+library(gUtils)
+library(rtracklayer)
+
+
+bed <- read.table(file,header = FALSE, sep="\t",stringsAsFactors=FALSE, quote="")
+bed1 <- read.table(file1,header = FALSE, sep="\t",stringsAsFactors=FALSE, quote="")
+colnames(bed) <- c("chr", "start", "end", "line", "L", "strand", "L_")
+colnames(bed1) <- c("chr", "start", "end", "line", "L", "strand", "L_")
+
+bed.gr <- makeGRangesFromDataFrame(bed,
+                         keep.extra.columns=FALSE,
+                         ignore.strand=FALSE,
+                         seqinfo=NULL,
+                         seqnames.field=c("seqnames", "seqname",
+                                          "chromosome", "chrom",
+                                          "chr", "chromosome_name",
+                                          "seqid"),
+                         start.field="start",
+                         end.field=c("end", "stop"),
+                         strand.field="strand",
+                         starts.in.df.are.0based=FALSE)
+
+bed1.gr <- makeGRangesFromDataFrame(bed1,
+                         keep.extra.columns=FALSE,
+                         ignore.strand=FALSE,
+                         seqinfo=NULL,
+                         seqnames.field=c("seqnames", "seqname",
+                                          "chromosome", "chrom",
+                                          "chr", "chromosome_name",
+                                          "seqid"),
+                         start.field="start",
+                         end.field=c("end", "stop"),
+                         strand.field="strand",
+                         starts.in.df.are.0based=FALSE)
+
+length(bed.gr)
+length(bed1.gr)
+
+bg.gr <- manifest %>% filter(Name %in% row.names(EPIC.norm.beta.DF)) %>%  select(chr, pos, strand)
+bg.gr$end <- bg.gr$pos
+names(bg.gr) <- c("chr", "start", "strand", "end")
+
+bg.gr <- makeGRangesFromDataFrame(bg.gr,
+                         keep.extra.columns=FALSE,
+                         ignore.strand=FALSE,
+                         seqinfo=NULL,
+                         seqnames.field=c("seqnames", "seqname",
+                                          "chromosome", "chrom",
+                                          "chr", "chromosome_name",
+                                          "seqid"),
+                         start.field="start",
+                         end.field=c("end", "stop"),
+                         strand.field="strand",
+                         starts.in.df.are.0based=FALSE)
+
+#The subject (in this case bg.gr) is the 
+#GenomicRanges instance within which the nearest neighbours are found. 
+#Can be missing, in which case x is also the subject.
+
+dist.bg <- distanceToNearest(bg.gr, bed.gr, select=c("arbitrary", "all"),ignore.strand=FALSE)
+
+df_ <- mcols(dist.bg) %>% as.data.frame()
+# df_ <- abs(df_)
+# df_$bin <- ceiling(df_$distance/1000)
+# 
+# unique.erv.dis <- unique(df_$bin)
+# 
+# bin.count <- matrix(ncol = 2, nrow = 0) %>% as.data.frame()
+# 
+# for (x in unique.erv.dis){
+#   temp <- df_ %>% filter(bin == x) %>% count()
+#   a <- c(x*1000, temp[1,1])
+#   bin.count <- rbind(bin.count, a)
+# }
+# 
+# names(bin.count) <- c("distance", "count")
+# bin.count <- bin.count %>%  arrange(distance)
+# bin.count$cumulative <- 0
+# bin.count[1, 3] <- bin.count[1,2]
+# 
+# for (i in seq(2, length(bin.count$count))){
+#   bin.count[i, 3] <- bin.count[i-1,3] + bin.count[i,2]
+# }
+# 
+# bin.count$cum.percent <- bin.count$cumulative / max(bin.count$cumulative)
+
+total.count <- dim(df_)[1]
+
+#do bootstrapping 100 times
+ci.count <- matrix(ncol = 11, nrow=100) %>%  as.data.frame()
+names(ci.count) <- seq(0,10000,by=1000)
+for (bs in seq(1, 100)){
+  print(c("bs:",bs,"/ 100"))
+  sample_ <- bg.df[sample(nrow(bg.df), 1000), ]
+  sample.gr <- makeGRangesFromDataFrame(sample_,
+                           keep.extra.columns=FALSE,
+                           ignore.strand=FALSE,
+                           seqinfo=NULL,
+                           seqnames.field=c("seqnames", "seqname",
+                                            "chromosome", "chrom",
+                                            "chr", "chromosome_name",
+                                            "seqid"),
+                           start.field="start",
+                           end.field=c("end", "stop"),
+                           strand.field="strand",
+                           starts.in.df.are.0based=FALSE)
+  
+  sample.dist.bg <- distanceToNearest(sample.gr, bed.gr, select=c("arbitrary", "all"),ignore.strand=FALSE)
+  
+  sample.dist.bg <- as.data.frame(sample.dist.bg)
+  
+  sample.dist.bg$bin <- ceiling(sample.dist.bg$distance/1000)
+  
+  unique.erv.dis <- unique(sample.dist.bg$bin)
+
+  for (x in unique.erv.dis){
+    if (x*1000 %in% seq(0,10000,by=1000)){
+      r <- which(rownames(ci.count) == bs)
+      c <- which(colnames(ci.count) == toString(x*1000))
+      temp <- sample.dist.bg %>% filter(bin <= x) %>% count()
+      ci.count[r,c] <- temp[1,1]
+    }
+  }
+
+}
+
+ci.count <- ci.count / total.count
+
+re.plt <- matrix(ncol=3, nrow=0) %>% as.data.frame()
+names(re.plt) <- c("distance", "mean", "ci")
+re.plt$dtype <- "bg"
+
+for (i in seq(1,length(ci.count))){
+  a <- ci_func(ci.count[,i])
+  if (is.na(a[1])){
+    next
+  }
+  c <- c(as.numeric(colnames(ci.count)[i]), a)
+  re.plt <- rbind(re.plt, c)
+}
+
+ggplot(re.plt, aes(x=distance, y=mean)) + 
+  geom_bar(stat="identity") + 
+  geom_pointrange(aes(ymin = mean-ci, ymax = mean+ci)) +
+  ylim(0,0.002)
+
+ggplot(head(bin.count, 15), aes(x=distance, y=cum.percent)) + geom_bar(stat="identity")
+
+```
+
+
+```{r average then substraction and find max}
+# var_func1 <- function(beta.adj){
+#   #calculating interindividual variation function
+#   print("===calculating interindividual variation===")
+#   #removing non-pair single samples  -	S2_liver_Endo is removed because it is singled out after outlier removal
+#   singles.removed <- beta.adj[,order(names(beta.adj))]  %>% select(c(-S85_kidney_Meso, -S62_intestine_Endo, -S2_liver_Endo))
+#   # singles.removed <- beta.adj[,order(names(beta.adj))]  %>% select(c(-S85_kidney_Meso, -S62_intestine_Endo, -S54_lung_Endo)) #before removal of the outlier S54_lung_Endo and S2_skin_Ecto
+#   rownames(singles.removed) <- rownames(beta.adj)
+#   
+#   individual_variation <- matrix(ncol = 0, nrow = dim(singles.removed)[1]) %>% as.data.frame()
+#   #average value for tissue within each individual
+#   for (a in seq(1,length(colnames(singles.removed)), by=2)){
+#     b = a+1
+#     individual_variation <- individual_variation %>% add_column((singles.removed[a]+singles.removed[b])/2)
+#   }
+#   # for each probe, individual with max variation - individual with min variation
+#   individual_variation[, "interindividual_var"] <- 
+#   apply(individual_variation[, 1:ncol(individual_variation)], 1, max) - apply(individual_variation[, 1:ncol(individual_variation)], 1, min)
+# 
+#   
+#   #tissue variation calculation
+#   
+#   print("===calculating germ layer variation with in an individual===")
+#   
+#   germ_variation <- matrix(ncol = 0, nrow = dim(singles.removed)[1]) %>% as.data.frame()
+# 
+#   
+#   Ecto <- singles.removed %>%  select(grep("Ecto", colnames(singles.removed)))
+#   Meso <- singles.removed %>%  select(grep("Meso", colnames(singles.removed)))
+#   Endo <- singles.removed %>%  select(grep("Endo", colnames(singles.removed)))
+# 
+#   germ.diff.mean <- matrix(ncol = 0, nrow = dim(singles.removed)[1]) %>% as.data.frame()
+#   germ.diff.mean[, "Ecto"] <- apply(Ecto, 1, mean)
+#   germ.diff.mean[, "Meso"] <- apply(Meso, 1, mean)
+#   germ.diff.mean[, "Endo"] <- apply(Endo, 1, mean)
+# 
+#   germ.diff.mean[, "Ecto_Endo"] <- abs(germ.diff.mean$Ecto - germ.diff.mean$Endo)
+#   germ.diff.mean[, "Endo_Meso"] <- abs(germ.diff.mean$Meso - germ.diff.mean$Endo)
+#   germ.diff.mean[, "Meso_Ecto"] <- abs(germ.diff.mean$Meso - germ.diff.mean$Ecto)
+# 
+#   
+#   print("===calculating mean of intergerm layer variation variation for each probe===")
+# 
+#   #get the max of the germlayer pair difference
+#   germ.diff.mean[, "germ_var"] <- apply(germ.diff.mean[,c("Ecto_Endo", "Endo_Meso", "Meso_Ecto")], 1, max)
+#   
+#   print("===Final processes===")
+#   variationVB <- matrix(ncol=0, nrow=dim(germ.diff.mean)[1]) %>% as.data.frame()
+#   
+#   # print("==========")
+#   # print(colnames(variationVB))
+#   # print("==========")
+#   
+#   variationVB <- variationVB %>% add_column(rownames(singles.removed))
+#   variationVB <- variationVB %>% add_column(individual_variation$interindividual_var)
+#   variationVB <- variationVB %>% add_column(germ.diff.mean$germ_var)
+#   # variationVB <- variationVB %>% add_column(germ.diff.mean$Ecto_Endo)
+#   # variationVB <- variationVB %>% add_column(germ.diff.mean$Endo_Meso)
+#   # variationVB <- variationVB %>% add_column(germ.diff.mean$Meso_Ecto)
+# 
+#   names(variationVB) <- c("probes", "interindividual_var", "germ_var")
+#   
+#   # print("==========")
+#   # print(colnames(variationVB))
+#   # print("==========")
+# 
+#   print("===Done!===")
+# 
+#   return(variationVB)
+# }
+
+
+```
+
+## Graphing inter/intra individual variation with new germ layer variation calculation strategy
+
+```{r}
+# singles.removed <- beta.adj[,order(names(beta.adj))]  %>% select(c(-S85_kidney_Meso, -S62_intestine_Endo, -S2_liver_Endo))
+#   # singles.removed <- beta.adj[,order(names(beta.adj))]  %>% select(c(-S85_kidney_Meso, -S62_intestine_Endo, -S54_lung_Endo)) #before removal of the outlier S54_lung_Endo and S2_skin_Ecto
+#   rownames(singles.removed) <- rownames(beta.adj)
+#   
+#   individual_variation <- matrix(ncol = 0, nrow = dim(singles.removed)[1]) %>% as.data.frame()
+#   #average value for tissue within each individual
+#   for (a in seq(1,length(colnames(singles.removed)), by=2)){
+#     b = a+1
+#     individual_variation <- individual_variation %>% add_column((singles.removed[a]+singles.removed[b])/2)
+#   }
+#   # for each probe, individual with max variation - individual with min variation
+#   individual_variation[, "interindividual_var"] <- 
+#   apply(individual_variation[, 1:ncol(individual_variation)], 1, max) - apply(individual_variation[, 1:ncol(individual_variation)], 1, min)
+# 
+#   
+#   #tissue variation calculation
+#   
+#   print("===calculating germ layer variation with in an individual===")
+#   
+#   germ_variation <- matrix(ncol = 0, nrow = dim(singles.removed)[1]) %>% as.data.frame()
+#   
+#   Ecto <- germ_variation %>%  select(grep("Ecto", colnames(singles.removed)))
+#   Meso <- germ_variation %>%  select(grep("Meso", colnames(singles.removed)))
+#   Endo <- germ_variation %>%  select(grep("Endo", colnames(singles.removed)))
+# 
+#   germ.diff.mean <- matrix(ncol = 0, nrow = dim(singles.removed)[1]) %>% as.data.frame()
+#   germ.diff.mean[, "Ecto"] <- apply(Ecto, 1, mean)
+#   germ.diff.mean[, "Meso"] <- apply(Meso, 1, mean)
+#   germ.diff.mean[, "Endo"] <- apply(Endo, 1, mean)
+# 
+#   germ.diff.mean[, "Ecto_Endo"] <- abs(germ.diff.mean$Ecto - germ.diff.mean$Endo)
+#   germ.diff.mean[, "Endo_Meso"] <- abs(germ.diff.mean$Meso - germ.diff.mean$Endo)
+#   germ.diff.mean[, "Meso_Ecto"] <- abs(germ.diff.mean$Meso - germ.diff.mean$Ecto)
+# 
+#   
+#   print("===calculating mean of intergerm layer variation variation for each probe===")
+#   #Gather the germlayer difference together
+# 
+#   germ.diff.mean <- matrix(ncol = 0, nrow = dim(singles.removed)[1]) %>% as.data.frame()
+#   
+#   #get the max of the germlayer pair difference
+#   germ.diff.mean[, "germ_var"] <- apply(germ_variation[,c("Ecto_Endo", "Endo_Meso", "Meso_Ecto")], 1, max)
+# 
+#   print("===Final processes===")
+#   variationVB <- matrix(ncol=0, nrow=dim(germ.diff.mean)[1]) %>% as.data.frame()
+#   
+#   # print("==========")
+#   # print(colnames(variationVB))
+#   # print("==========")
+#   
+#   variationVB <- variationVB %>% add_column(rownames(singles.removed))
+#   variationVB <- variationVB %>% add_column(individual_variation$interindividual_var)
+#   variationVB <- variationVB %>% add_column(germ.diff.mean$germ_var)
+#   # variationVB <- variationVB %>% add_column(germ.diff.mean$Ecto_Endo)
+#   # variationVB <- variationVB %>% add_column(germ.diff.mean$Endo_Meso)
+#   # variationVB <- variationVB %>% add_column(germ.diff.mean$Meso_Ecto)
+# 
+#   names(variationVB) <- c("probes", "interindividual_var", "germ_var")
+  
+```
+
+
+New Intra-individual variation fucntion done according to the meeting notes from 31.03.2022
+
+```{r New Intra-individual variation fucntion done according to the meeting notes from 31.03.2022}
+# var_func1 <- function(beta.adj){
+#   #calculating interindividual variation function
+#   print("===calculating interindividual variation===")
+#   #removing non-pair single samples  -	S2_liver_Endo is removed because it is singled out after outlier removal
+#   singles.removed <- beta.adj[,order(names(beta.adj))]  %>% select(c(-S85_kidney_Meso, -S62_intestine_Endo, -S2_liver_Endo))
+#   # singles.removed <- beta.adj[,order(names(beta.adj))]  %>% select(c(-S85_kidney_Meso, -S62_intestine_Endo, -S54_lung_Endo)) #before removal of the outlier S54_lung_Endo and S2_skin_Ecto
+#   rownames(singles.removed) <- rownames(beta.adj)
+#   
+#   individual_variation <- matrix(ncol = 0, nrow = dim(singles.removed)[1]) %>% as.data.frame()
+#   #average value for tissue within each individual
+#   for (a in seq(1,length(colnames(singles.removed)), by=2)){
+#     b = a+1
+#     individual_variation <- individual_variation %>% add_column((singles.removed[a]+singles.removed[b])/2)
+#   }
+#   # for each probe, individual with max variation - individual with min variation
+#   individual_variation[, "interindividual_var"] <- 
+#   apply(individual_variation[, 1:ncol(individual_variation)], 1, max) - apply(individual_variation[, 1:ncol(individual_variation)], 1, min)
+# 
+#   
+#   #tissue variation calculation
+#   
+#   print("===calculating germ layer variation with in an individual===")
+#   #removing non-pair single samples
+# 
+#   germ_variation <- matrix(ncol = 0, nrow = dim(singles.removed)[1]) %>% as.data.frame()
+# 
+#   i <- 0
+#   
+#   for (a in seq(1,length(colnames(singles.removed)), by=2)){
+#     i <- i+1
+#     b <-  a+1
+#     germ_variation <- germ_variation %>% add_column((abs(singles.removed[a]-singles.removed[b])))
+#     
+#     germ1 <- as.list(strsplit(colnames(singles.removed[a]), split="_"))[[1]]
+#     germ2 <- as.list(strsplit(colnames(singles.removed[b]), split="_"))[[1]]
+#     #pair wise inter tissue difference calculation
+#     names(germ_variation)[i] <- paste(germ1[[1]],germ1[[3]],germ2[[3]],sep="_")
+#   }
+#   # head(germ_variation)
+#   
+#   print("===calculating mean of intergerm layer variation variation for each probe===")
+#   #Gather the germlayer difference together
+#   Ecto_Endo <- germ_variation %>%  select(grep("Ecto_Endo|Endo_Ecto", colnames(germ_variation)))
+#   Endo_Meso <- germ_variation %>%  select(grep("Endo_Meso|Meso_Endo", colnames(germ_variation)))
+#   Meso_Ecto <- germ_variation %>%  select(grep("Meso_Ecto|Ecto_Meso", colnames(germ_variation)))
+#   
+#   germ.diff.mean <- matrix(ncol = 0, nrow = dim(singles.removed)[1]) %>% as.data.frame()
+#   
+#   #Mean calculated for each germlayer pair difference
+#   germ.diff.mean[, "Ecto_Endo"] <- apply(Ecto_Endo, 1, mean)
+#   germ.diff.mean[, "Endo_Meso"] <- apply(Endo_Meso, 1, mean)
+#   germ.diff.mean[, "Meso_Ecto"] <- apply(Meso_Ecto, 1, mean)
+#   
+#   #get the max of the germlayer pair difference mean
+#   germ.diff.mean[, "germ_var"] <- apply(germ.diff.mean, 1, max)
+# 
+#   print("===Final processes===")
+#   variationVB <- matrix(ncol=0, nrow=dim(germ.diff.mean)[1]) %>% as.data.frame()
+#   
+#   # print("==========")
+#   # print(colnames(variationVB))
+#   # print("==========")
+#   
+#   variationVB <- variationVB %>% add_column(rownames(singles.removed))
+#   variationVB <- variationVB %>% add_column(individual_variation$interindividual_var)
+#   variationVB <- variationVB %>% add_column(germ.diff.mean$germ_var)
+#   variationVB <- variationVB %>% add_column(germ.diff.mean$Ecto_Endo)
+#   variationVB <- variationVB %>% add_column(germ.diff.mean$Endo_Meso)
+#   variationVB <- variationVB %>% add_column(germ.diff.mean$Meso_Ecto)
+# 
+#   names(variationVB) <- c("probes", "interindividual_var", "germ_var", "Ecto_Endo", "Endo_Meso", "Meso_Ecto")
+#   
+#   # print("==========")
+#   # print(colnames(variationVB))
+#   # print("==========")
+# 
+#   print("===Done!===")
+# 
+#   return(variationVB)
+# }
+
+
+```
+
+
+
+```{r}
+trans <- read.table(file7,header = FALSE, sep="\t",stringsAsFactors=FALSE, quote="")
+colnames(trans) <- c("chr", "start", "end", "line", "L", "strand", "L_")
+
+#convert the df into gr object
+transposon.gr <- makeGRangesFromDataFrame(trans,
+                           keep.extra.columns=FALSE,
+                           ignore.strand=FALSE,
+                           seqinfo=NULL,
+                           seqnames.field=c("seqnames", "seqname",
+                                            "chromosome", "chrom",
+                                            "chr", "chromosome_name",
+                                            "seqid"),
+                           start.field="start",
+                           end.field=c("end", "stop"),
+                           strand.field="strand",
+                           starts.in.df.are.0based=FALSE)
+
+
+Cpg.list <- CpG_decluster
+dtype <- "SiVCpG"
+bs.size <- 907
+
+bg.df <- manifest %>% filter(Name %in% Cpg.list) %>% select(chr, pos, strand)
+bg.df %>% dim()
+bg.df$end <- bg.df$pos
+names(bg.df) <- c("chr", "start", "strand", "end")
+#convert df into a gr object
+bg.gr <- makeGRangesFromDataFrame(bg.df,
+                           keep.extra.columns=FALSE,
+                           ignore.strand=FALSE,
+                           seqinfo=NULL,
+                           seqnames.field=c("seqnames", "seqname",
+                                            "chromosome", "chrom",
+                                            "chr", "chromosome_name",
+                                            "seqid"),
+                           start.field="start",
+                           end.field=c("end", "stop"),
+                           strand.field="strand",
+                           starts.in.df.are.0based=FALSE)
+  
+  #The subject (in this case bg.gr) is the 
+  #GenomicRanges instance within which the nearest neighbours are found. 
+  #Can be missing, in which case x is also the subject.
+  
+  #Use distanceToNearest function to find out the distance of the nearest erv to each CpG
+  dist.bg <- distanceToNearest(bg.gr, transposon.gr, select=c("all"),ignore.strand=FALSE)
+  #get the distance info from gr object
+  df_ <- mcols(dist.bg) %>% as.data.frame()
+  #binning
+  df_$bin <- ceiling(df_$distance/1000)
+
+  unique.erv.dis <- unique(df_$bin)
+  
+  bin.count <- matrix(ncol = 2, nrow = 0) %>% as.data.frame()
+
+  for (x in unique.erv.dis){
+    if (x == 0){
+      next
+    }
+    temp <- df_ %>% filter(bin <= x) %>% dim()
+    a <- c(x*1000, temp[1])
+    bin.count <- rbind(bin.count, a)
+  }
+  #count is cumulative count
+  names(bin.count) <- c("distance", "count")
+  bin.count <- bin.count %>%  arrange(distance)
+  
+  # bin.count$cumulative <- 0
+  # bin.count[1, 3] <- bin.count[1,2]
+  # 
+  # for (i in seq(2, length(bin.count$count))){
+  #   bin.count[i, 3] <- bin.count[i-1,3] + bin.count[i,2]
+  # }
+  
+  total.count <- bg.gr %>% length()
+  bin.count$cu.percent <- bin.count$count / total.count
+  
+  #prepare a df of 100 row to contain number from 100 bs run and 41 columns to contain value for 41 bins
+  ci.count <- matrix(ncol = 10, nrow=100) %>%  as.data.frame()
+  names(ci.count) <- seq(1000,10000,by=1000)
+
+  #do bootstrapping 100 times
+  for (bs in seq(1, 100)){
+    print(c("bs:",bs,"/ 100", dtype))
+    #randomly selects sample (boostraping)
+    sample_ <- bg.df[sample(nrow(bg.df), bs.size, replace = TRUE), ]
+    #make randomly selected sample into gr object
+    sample.gr <- makeGRangesFromDataFrame(sample_,
+                             keep.extra.columns=FALSE,
+                             ignore.strand=FALSE,
+                             seqinfo=NULL,
+                             seqnames.field=c("seqnames", "seqname",
+                                              "chromosome", "chrom",
+                                              "chr", "chromosome_name",
+                                              "seqid"),
+                             start.field="start",
+                             end.field=c("end", "stop"),
+                             strand.field="strand",
+                             starts.in.df.are.0based=FALSE)
+    #Use distanceToNearest function to find out the distance of the nearest erv to each  bootstrap selected CpG
+    sample.dist.bg <- distanceToNearest(sample.gr, transposon.gr ,ignore.strand=FALSE)
+
+    sample.dist.bg <- as.data.frame(sample.dist.bg)
+
+    #binning distance by the thousands
+    sample.dist.bg$bin <- ceiling(sample.dist.bg$distance/1000)
+    
+    unique.erv.dis <- unique(sample.dist.bg$bin)
+    
+    #get the binned distance and place them into premade df ci.count
+    for (x in unique.erv.dis){
+      if (x*1000 %in% seq(1000,10000,by=1000)){
+        r <- which(rownames(ci.count) == bs)
+        c <- which(colnames(ci.count) == toString(x*1000))
+        #make sure the values are cumulative
+        temp <- sample.dist.bg %>% filter(bin <= x) %>% dim()
+        ci.count[r,c] <- temp[1]
+      }
+    }
+  }
+  #convert into percentage
+  ci.count <- ci.count / total.count
+
+    #create empty column for generating mean and ci
+  re.plt <- matrix(ncol=3, nrow=0) %>% as.data.frame()
+  colnames(re.plt) <- c("distance", "upper.b", "lower.b")
+  
+  #use c_function to get the mean and ci
+  for (i in seq(1,length(ci.count))){
+    a <- ci_func(ci.count[i])
+    b <- ci.count[i]
+    d <- b[!is.na(b)] %>% as.data.frame()
+    a <- ci_func(d)
+    
+    if (is.na(a[1])){
+      next
+    }
+    c <- c(as.numeric(colnames(ci.count)[i]), a)
+    re.plt <- rbind(re.plt, c)
+  }
+
+  re.plt$cu.percent <- bin.count$cu.percent[c(1:dim(re.plt)[1])]
+  
+  re.plt$datatype <- toString(dtype)
+  
+  names(re.plt) <- c("distance", "upper.b", "lower.b", "cu.percent","datatype")
+
+  return (re.plt)
+  
+}
+
+```

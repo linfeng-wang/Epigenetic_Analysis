@@ -1,0 +1,723 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+```{r loading packages}
+.libPaths("/home/linfeng/R/x86_64-pc-linux-gnu-library/3.4") 
+
+library(pacman)
+library(datasets)
+library(tidyverse)
+library(VennDiagram)
+library(devtools)
+#library(MethylToSNP)
+library(GGally)
+library(ggfortify)
+library(cowplot)
+library(psych)
+library(reshape)
+library(IlluminaHumanMethylationEPICanno.ilm10b2.hg19)
+# library(meffil)
+library(missMethyl)
+library(GenomicRanges)
+library("VennDiagram")
+library(readxl)
+library(tidyverse)
+library(ggvenn)
+library(segmenter)
+# library(Gviz)
+library(ComplexHeatmap)
+# library(TxDb.Hsapiens.UCSC.hg18.knownGene)
+library(chromswitch)
+library(rtracklayer)
+library(annotatr)
+library(boot)
+library(plotrix)
+
+
+pacman::p_load(pacman, dplyr, GGally, ggplot2, ggthemes, 
+               ggvis, httr, lubridate, plotly, rio, rmarkdown, 
+               shiny, stringr, tidyr)
+
+
+```
+
+```{r loading dataframes}
+  # setwd("/data/s1/fetal_EPIC_processed")
+  EPIC.norm.beta<- readRDS("/data/s1/fetal_EPIC_processed/Beta_matrices/EPIC.norm.beta.RDS")
+  SampleSheet_edited <- readRDS("/data/s1/fetal_EPIC_processed/samplesheets/SampleSheet_edited.RDS")
+  
+  EPIC.norm.beta <- as.data.frame(EPIC.norm.beta)
+
+  SampleSheet_edited <- as.data.frame(SampleSheet_edited)
+```
+
+Running meffill analysis
+```{r meffil}
+# options(mc.cores=6)
+# path_to_idat_files = "/home/linfeng/IDAT_pool"
+# samplesheet <- meffil.create.samplesheet(path_to_idat_files)
+# 
+# beta <- meffil.normalize.dataset(samplesheet, qc.file="qc/report.html", author="Linfeng", study="EPIC array", number.pcs=10)
+
+```
+Function for removing NAs from dataframe and samplesheet
+```{r}
+df_processing <- function(EPIC.norm.beta){
+  
+  #put unique identifier as header for EPIC.norm.beta.DF
+  list_ <- matrix(c(SampleSheet_edited$unique.identifier, SampleSheet_edited$Sample_Name), 
+                  nrow=2, ncol=dim(SampleSheet_edited)[1], byrow = TRUE)
+  
+  
+  for (i in seq(1,length(colnames(EPIC.norm.beta)))){
+    for (x in seq(1,length(list_[2,]))){
+      if (colnames(EPIC.norm.beta)[i] == list_[2,][x]) {
+        colnames(EPIC.norm.beta)[i] <- list_[1,][x]
+      }
+    }
+  }
+  
+  #reorganize data, preparing for variance study, removing NA sample
+  EPIC.norm.beta.DF <- as.data.frame(EPIC.norm.beta)
+  
+  EPIC.norm.beta.DF <-
+    EPIC.norm.beta.DF %>% 
+    select(contains("S"))
+  
+  #graphing example individual
+  # ggplot(EPIC.norm.beta.DF, aes(x = S48_brain_Ecto, y = S48_intestine_Endo)) + 
+  #   geom_point(alpha = 0.006)
+  # 
+  # par(mar=c(1,1,1,1))
+  # par("mar")
+  
+  #cor(EPIC.norm.beta.DF$S48_brain_Ecto, EPIC.norm.beta.DF$S48_intestine_Endo)
+  
+  print("EPIC.norm.beta.DF dim:")
+  print(dim(EPIC.norm.beta.DF))
+  
+  return(EPIC.norm.beta.DF)
+
+}
+
+SS_processing <- function(SampleSheet_edited){  
+
+  SampleSheet_edited <- SampleSheet_edited %>% filter(Individual != "NANA")
+  
+  SampleSheet_edited <- SampleSheet_edited %>% #removing label whose data is missing in EPIC data array
+  filter(unique.identifier != "S85_intestine_Endo") %>% 
+  filter(unique.identifier != "S54_brain_Ecto") %>% 
+  filter(unique.identifier != "S62_spine_Ecto")
+  # sum(is.na(row)) #check for 0s
+  # for (i in seq(1,length(m.values))){
+  #   #print(i)
+  #   print(sum(is.na(m.values[i])))
+  # }
+  print("SampleSheet dim:")
+  print(dim(SampleSheet_edited))
+  
+  return(SampleSheet_edited)
+}
+
+```
+
+```{r running of the Na removal functions}
+EPIC.norm.beta.DF <-  df_processing(EPIC.norm.beta)
+
+SampleSheet_edited <-  SS_processing(SampleSheet_edited)
+
+```
+
+
+sex prediction visualisation from Beta value
+```{r}
+manifest <- as.data.frame(getAnnotation(IlluminaHumanMethylationEPICanno.ilm10b2.hg19))
+
+sex_probes <- manifest %>% filter(chr == "chrY")  %>% row.names()
+
+
+sex_beta <- EPIC.norm.beta %>% filter(row.names(EPIC.norm.beta) %in% sex_probes)
+sex_beta <- df_processing(sex_beta)
+
+sex_beta <- melt(sex_beta)
+sex_beta$variable <- as.character(sex_beta$variable)
+
+
+#adding in predicted sex label
+list_ <- matrix(c(SampleSheet_edited$unique.identifier, SampleSheet_edited$predicted.sex),
+                  nrow=2, ncol=dim(SampleSheet_edited)[1], byrow = TRUE)
+
+sex_beta$predicted_sex <-  0
+
+for (i in seq(1,dim(sex_beta)[1])){
+  for (x in seq(1,length(list_[1,]))){
+    if (sex_beta$variable[i] == list_[1,][x]) {sex_beta$predicted_sex[i] <- list_[2,][x]}
+    }
+}
+
+
+#adding recorded sex label
+list_ <- matrix(c(SampleSheet_edited$unique.identifier, SampleSheet_edited$Sex), 
+                  nrow=2, ncol=dim(SampleSheet_edited)[1], byrow = TRUE)
+
+sex_beta$recorded_sex <-  0
+
+
+for (i in seq(1,dim(sex_beta)[1])){
+  for (x in seq(1,length(list_[1,]))){
+    if (sex_beta$variable[i] == list_[1,][x]) {sex_beta$recorded_sex[i] <- list_[2,][x]}
+    }
+}
+
+#turn unique label in to person label
+for (i in seq(1,dim(sex_beta)[1])){
+  temp <- strsplit(sex_beta$variable[i], split="_")[[1]]
+  sex_beta$variable[i]  <- paste(temp[1],temp[3], sep = "_")
+  }
+
+# sex_beta <- sex_beta %>% arrange(variable)
+```
+
+# recorded sex chrY beta values
+```{r}
+options(repr.plot.width=55, repr.plot.height=8)
+
+p <- ggplot(sex_beta, aes(x=variable, y=value, color=recorded_sex)) +
+  geom_violin(trim=FALSE)  +
+  scale_color_discrete(name=NULL) +
+  theme(legend.position="top", axis.text.x = element_text(angle = 80))
+
+p + stat_summary(fun=median, geom="point", size=0.8, color="red") +labs(title="ChrY prob spread for each individual (Recorded)",
+        x ="Individual", y = "Beta value")
+```
+As can be seen in the graph the sex can be distinguished from the distribution of beta value as clearly indicated by the violin plot and the median value as labelled by the red dot.
+
+The violin plot is graphed from chrY related probe beta value, as colored by recorded sex. As can be seen that the grey samples with NA for recorded sex can be correctly categorized by looking at the beta value distribution
+
+
+```{r}
+# Predicted sex from chrY beta values
+
+# p <- ggplot(sex_beta, aes(x=variable, y=value, color=predicted_sex)) +
+#   geom_violin(trim=FALSE)  +
+#   scale_color_discrete(name=NULL) +
+#   theme(legend.position="top", axis.text.x = element_text(angle = 30))
+# 
+# p + stat_summary(fun=median, geom="point", size=0.8, color="red") +labs(title="ChrY prob spread for each individual (Predicted)",
+#         x ="Individual", y = "Beta value")
+
+#In predicted sex, meffil correctly labeled the missing data according to the beta value distribution
+
+```
+
+
+
+
+
+cross hybridised + SNP probe removal
+```{r cross hybridised + SNP probe removal}
+
+crp.SNP.remove.func <- function(EPIC.norm.beta.DF, crp){
+
+  row.names.remove <- c(crp[,1])
+  
+  manifest <- as.data.frame(getAnnotation(IlluminaHumanMethylationEPICanno.ilm10b2.hg19))
+  CPG_rs <- rownames(manifest %>% select(CpG_rs) %>% filter(CpG_rs != "NA"))
+  CPG_maf <- rownames(manifest %>% select(CpG_maf) %>% filter(CpG_maf >= 0.05))
+  
+  #removing probs from the crp files
+  EPIC.norm.beta.DF <- EPIC.norm.beta.DF[!(row.names(EPIC.norm.beta.DF) %in% row.names.remove),]
+  
+  EPIC.norm.beta.DF <- EPIC.norm.beta.DF[!(row.names(EPIC.norm.beta.DF) %in% CPG_rs),]
+  # EPIC.norm.beta.DF <- EPIC.norm.beta.DF[!(row.names(EPIC.norm.beta.DF) %in% CPG_maf),]
+
+  print(c("No. of cross hybridised and snp probe removed:", length(row.names.remove)))
+  print(c("No. of CPG_rs probe removed:", length(CPG_rs)))
+  # print(c("No. of CPG_maf probe removed:", length(CPG_maf)))
+
+  return(EPIC.norm.beta.DF)
+}
+
+crp <- read.table("/home/linfeng/R_script/xycrp.csv" ,sep="\n", header=TRUE)
+EPIC.norm.beta.DF <- crp.SNP.remove.func(EPIC.norm.beta.DF, crp)
+```
+
+
+lm adjustion functions
+```{r lm adjustion functions}
+lm_zero_removal <- function(EPIC.norm.beta.DF){
+    for (i in seq(1, length(EPIC.norm.beta.DF))){ #give 0 values a very small value
+      print(c(i, "out of", length(EPIC.norm.beta.DF)))
+      for (x in seq(1, length(EPIC.norm.beta.DF[,i]))){
+        if(EPIC.norm.beta.DF[x,i]==0){
+          EPIC.norm.beta.DF[x,i] = EPIC.norm.beta.DF[x,i] + 1e-14
+          }
+      }
+    }
+    return(EPIC.norm.beta.DF)
+}
+
+
+lm_adjustion_func <- function(EPIC.norm.beta.DF, SampleSheet_edited){
+
+  print("===Taking variables===")
+  # make sure the slide, row and column variables are factors
+  slide = as.factor(SampleSheet_edited$Slide) #should not be adjusted for
+  row= as.factor(SampleSheet_edited$sentrix_row)
+  column = as.factor(SampleSheet_edited$sentrix_col) #only one level
+  sex = as.factor(SampleSheet_edited$predicted.sex)
+  age = as.factor(SampleSheet_edited$Gestational.age)
+
+  print("===Converting to M values===")
+
+  m.values <- log(EPIC.norm.beta.DF/(1-EPIC.norm.beta.DF)) #where beta rows are cpgs and columns are samples 
+  m.value.adj <- lm(t(m.values) ~ row + sex) # make sure that the rownames of t(m.values) match the order of the samples that you extracted slide, row and column from
+  
+  print("===Converting back to beta===")
+  inter <- coef(m.value.adj)[1,]
+  res <- t(m.value.adj$residuals)
+  meth.data.adj <- res + inter[row(res)] #why add the residual to intercept
+
+  beta.adj <- exp(meth.data.adj)/(1+exp(meth.data.adj)) # transform from M values back to beta values
+  beta.adj <- as.data.frame(beta.adj)
+  rownames(beta.adj) <-rownames(EPIC.norm.beta.DF)
+
+  return(beta.adj)
+}
+
+```
+
+
+running of the lm_adjustion_function
+
+```{r running of the lm_adjustion_function}
+EPIC.norm.beta.DF <- lm_zero_removal(EPIC.norm.beta.DF) #takes a long time to run, make sure its not run every time if the variable is already loaded
+
+beta.adj <- lm_adjustion_func(EPIC.norm.beta.DF, SampleSheet_edited)
+
+```
+
+function for PCA analysis function calculated variance explained + PC
+
+```{r function for PCA analysis function calculated variance explained + PC}
+#PCA analysis function calculated variance explained
+pca_analysis_sdev <- function(beta_df){
+  print("===PCA analysis===")
+  beta.pca <- prcomp(t(beta_df), scale= TRUE)
+  print("===PCA ratio calculation===")
+  var_explained <- as.data.frame(beta.pca$sdev^2 / sum(beta.pca$sdev^2)) %>% add_column(seq(1, length(beta_df)))
+  print("===Graphing Scree plot===")
+  colnames(var_explained) <- c('PC', 'sample')
+  p2 <- ggplot(var_explained, aes(x=sample, y=PC)) + 
+    geom_bar(stat='identity') + 
+    xlab("Principal Component") + 
+    ylab("Variance Explained") +
+    ggtitle("Scree Plot")
+    # ylim(0, 1)
+  p2 + theme(axis.text.x = element_text(angle = 45, hjust = 1))  +
+        ggtitle("PCA analysis - variance explained") + ylim(0,0.23)
+  # scale_y_continuous(trans = "log10", limits = c(0, 1)) 
+}
+
+#PCA analysis function calculating Principle component
+pca_analysis_PC <- function(beta_df){
+  print("===PCA analysis===")
+  beta.pca <- prcomp(t(beta_df), scale= TRUE)
+  var_explained <- as.data.frame(beta.pca$sdev^2 / sum(beta.pca$sdev^2)) %>% add_column(colnames(beta_df))
+  
+  print("===Graphing dot plot===")
+  beta.pca$x %>% 
+  as.data.frame %>%
+  ggplot(aes(x=PC1,y=PC2)) + geom_point(alpha=0.6) + theme_bw(base_size=32) + 
+  labs(x=paste0("PC1: ",round(var_explained[[1]][1]*100,1),"%"),
+       y=paste0("PC2: ",round(var_explained[[1]][2]*100,1),"%")) +
+  theme(legend.title = element_text(size=15), 
+        legend.text = element_text(size=10),
+        axis.text=element_text(size=12),
+        axis.title=element_text(size=14,face="bold")) +
+        ggtitle("PCA analysis - PC")
+}
+```
+
+# PCA
+removing outliers
+```{r finding and removing outliers }
+
+# beta_PC %>% filter(PC1 < -1500) %>%  select(c(PC1, unique_label, sex, row, slide))
+
+
+beta.adj <- beta.adj %>% select(c(-S54_lung_Endo, -S2_skin_Ecto))
+SampleSheet_edited <- SampleSheet_edited %>% filter(unique.identifier != "S54_lung_Endo") %>% filter(unique.identifier != "S2_skin_Ecto")
+
+```
+
+
+## All samples (adjusted data) - variance explaind
+
+```{r}
+pca_analysis_sdev(beta.adj)
+```
+Analysis:top 5 PCs used to be able to contribute to around 50% the variation of the data. This is a god shape for Scree plot meaning top PCs can account ofr majoity of variation and therefore many factors can be disregarded. After removal of the two outliers, the top 5 contributes a bit less but still contribute to around 50% of total vairance
+
+## All samples (adjusted data) - PC
+
+```{r}
+pca_analysis_PC(beta.adj)
+```
+
+As shown there are two outliers that has high variation in PC1
+	
+They are:
+  S54_lung_Endo	-2253.399	S54_lung_Endo	M	05	204088030103
+  v	-1749.628	S2_skin_Ecto	F	01	203982200068
+  
+It also shows that there is redundancy in the data. This redundancy proves that PCA may be used to reduce the original data into a smaller number of new variables. After the removal of outliers, there has been a drecrease in variation by PC1
+
+
+Data organisation for producing PC plots with colour
+
+```{r Data organisation for producing PC plots with colour}
+beta.pca <- prcomp(t(beta.adj), scale= TRUE)
+
+beta_PC <-beta.pca$x %>% as.data.frame()
+
+beta_PC$germlayer= 0
+beta_PC$tissue= 0
+beta_PC$unique_label= 0
+beta_PC$gestation2w= 0
+beta_PC$gestation3w= 0
+beta_PC$sex= 0
+beta_PC$slide= 0
+beta_PC$row= 0
+
+
+for (i in seq(1, length(beta.adj))){
+  temp <- as.list(strsplit(colnames(beta.adj)[i], split="_"))[[1]]
+  beta_PC$germlayer[i] <- temp[3]
+  beta_PC$tissue[i] <- temp[2]
+  beta_PC$unique_label[i] <- colnames(beta.adj)[i]
+
+}
+# -2 is to minus the two outliers
+list_ <- matrix(c(SampleSheet_edited$unique.identifier, SampleSheet_edited$Gestational.age), 
+                  nrow=2, ncol=dim(SampleSheet_edited)[1], byrow = TRUE)
+
+for (i in seq(1,length(list_[2,]))){
+  if (is.na(list_[2,i])) {list_[2,i] <- 'Missing'}
+  else if (list_[2,i] == "9" | list_[2,i] == "9-10" ) {list_[2,i] <- "9-10"}
+  else if (list_[2,i] == "10" | list_[2,i] == "10-11" ) {list_[2,i] <- "10-11"}
+  else if (list_[2,i] == "11" | list_[2,i] == "11-12" ) {list_[2,i] <- "11-12"}
+  else if (list_[2,i] == "12" | list_[2,i] == "12-13" | list_[2,i] == "14" | list_[2,i] == "15" | list_[2,i] == "16") 
+    {list_[2,i] <- "12-16"}
+  else if (list_[2,i] == "17" | list_[2,i] == "18" ) {list_[2,i] <- "17-18"}
+  else {print(list_[2,i])}
+}
+
+beta_PC$gestation2w <- list_[2,]
+
+beta_PC %>% dim()
+list_ %>%  dim()
+list_ <- matrix(c(SampleSheet_edited$unique.identifier, SampleSheet_edited$Gestational.age), 
+                  nrow=2, ncol=dim(SampleSheet_edited)[1], byrow = TRUE)
+
+for (i in seq(1,length(list_[2,]))){
+  if (is.na(list_[2,i])) {list_[2,i] <- 'Missing'}
+  else if (list_[2,i] == "9" | list_[2,i] == "9-10" | list_[2,i] == "10" |list_[2,i] == "10-11" ) {list_[2,i] <- "9-11"}
+  else if (list_[2,i] == "11" | list_[2,i] == "11-12" | list_[2,i] == "12" | list_[2,i] == "12-13" ) {list_[2,i] <- "11-13"}
+  else if (list_[2,i] == "14" | list_[2,i] == "16" ) {list_[2,i] <- "14-16"}
+  else if (list_[2,i] == "17" | list_[2,i] == "18" ) {list_[2,i] <- "17-18"}
+  else {print(list_[2,i])}
+}
+
+beta_PC %>% dim()
+
+beta_PC$gestation3w <- list_[2,]
+beta_PC %>%  group_by(gestation3w) %>% summarise("number" = n())
+
+beta_PC$sex <- SampleSheet_edited$predicted.sex
+beta_PC$row <- SampleSheet_edited$sentrix_row
+beta_PC$slide <- SampleSheet_edited$Slide
+
+
+```
+
+## Summary histogram for original gestational age and count
+Shows that the number of the in each gestational age is unequal the missing columns are umbiguous age: e.g. the  column between 10 and 11 and 10-11
+```{r}
+summary_gestation<- SampleSheet_edited %>% 
+  group_by(Gestational.age) %>% 
+  summarise("number" = n()) %>%  arrange(Gestational.age)
+summary_gestation$Gestational.age[13] <- "NA"
+summary_gestation <- summary_gestation[c(11,12,1,2,3,4,5,6,7,8,9,10,13),]			
+
+barplot(summary_gestation$number, names.arg = summary_gestation$Gestational.age, main = "Summary histogram for gestational age and count", las=2)  
+
+```
+
+
+## Summary table for tissue and germlayer
+
+```{r}
+summary_germ_tissue <- SampleSheet_edited %>% 
+  group_by(germlayer, tissue) %>% 
+  summarise("number" = n())
+
+par(mar=c(5,4,4,4))
+barplot(summary_germ_tissue$number, names.arg = paste(summary_germ_tissue$germlayer, summary_germ_tissue$tissue, sep="_"),las=2, main= "Summary table for tissue and germlayer")  
+
+ggplot(summary_germ_tissue, aes(x=paste(summary_germ_tissue$germlayer, summary_germ_tissue$tissue, sep="_"), y=number)) + geom_bar(stat="identity") + theme(axis.text.x = element_text(angle = 30)) + xlab("Germ_Tissue") +
+ggtitle("Summary for tissue and germlayer")
+
+
+```
+The values with the highest counts are Ecto_brain, Endo_intestine, Meso_kidney.
+
+
+## PC - colored by Germlayer
+
+```{r}
+ggplot(beta_PC, aes(x=PC1,y=PC2)) + geom_point(aes(color=germlayer)) + theme_bw(base_size=32) + 
+  theme(legend.title = element_text(size=15), 
+        legend.text = element_text(size=10),
+        axis.text=element_text(size=12),
+        axis.title=element_text(size=14,face="bold"))+
+  geom_text(
+    label=beta_PC$germlayer, 
+    nudge_x = 0.25, nudge_y = 0.25, 
+    check_overlap = T,
+    alpha = 0.2
+  ) +
+  ggtitle("Colored by germlayer") +
+  xlim(-1000,1000) + ylim(-500, 500)
+
+
+```
+There is a clear three part stratification in the distribution.
+comparing to PC1, PC2 is already smeared out, and as we go down it will be more smeared out
+## PC - colored by Tissue
+
+```{r}
+ggplot(beta_PC, aes(x=PC1,y=PC2)) + geom_point(aes(color=tissue)) + theme_bw(base_size=32) + 
+  theme(legend.title = element_text(size=15), 
+        legend.text = element_text(size=10),
+        axis.text=element_text(size=12),
+        axis.title=element_text(size=14,face="bold"))+
+  geom_text(
+    label=beta_PC$tissue, 
+    nudge_x = 0.25, nudge_y = 0.25, 
+    check_overlap = T,
+    alpha = 0.2
+  ) +
+  ggtitle("Colored by tissue") +
+  xlim(-1000,1000) + ylim(-500, 500)
+
+```
+The tripartisan distribution from the germlayer plot is similarly replicated here in terms of tissue as the three prominant tissue-germlayers part contributes the most to this
+
+After adjusting for slide:
+the tripartisan distribution is not as clearly seem.
+
+## PC - colored by Gestational Age (2 weeks)
+
+```{r}
+ggplot(beta_PC, aes(x=PC1,y=PC2)) + geom_point(aes(color=gestation2w)) + theme_bw(base_size=32) + 
+  theme(legend.title = element_text(size=15), 
+        legend.text = element_text(size=10),
+        axis.text=element_text(size=12),
+        axis.title=element_text(size=14,face="bold"))+
+  geom_text(
+    label=beta_PC$gestation2w, 
+    nudge_x = 0.25, nudge_y = 0.25, 
+    check_overlap = T,
+    alpha = 0.15
+  ) +
+  ggtitle("Colored by gestational age (2w)")+
+  xlim(-1000,1000) + ylim(-500, 500)
+
+```
+
+## PC - colored by Gestational Age (3 weeks)
+
+```{r}
+ggplot(beta_PC, aes(x=PC1,y=PC2)) + geom_point(aes(color=gestation3w)) + theme_bw(base_size=32) + 
+  theme(legend.title = element_text(size=15), 
+        legend.text = element_text(size=10),
+        axis.text=element_text(size=12),
+        axis.title=element_text(size=14,face="bold")) +
+  geom_text(
+    label=beta_PC$gestation3w, 
+    nudge_x = 0.25, nudge_y = 0.25, 
+    check_overlap = T,
+    alpha = 0.15
+  ) +
+  ggtitle("Colored by GA (3w)") +
+  xlim(-1000,1000) + ylim(-500, 500)
+
+```
+
+## PC - colored by Sex
+
+```{r}
+ggplot(beta_PC, aes(x=PC1,y=PC2)) + geom_point(aes(color=sex)) + theme_bw(base_size=32) + 
+  theme(legend.title = element_text(size=15), 
+        legend.text = element_text(size=10),
+        axis.text=element_text(size=12),
+        axis.title=element_text(size=14,face="bold"))+
+        ggtitle("PC-color by sex") +
+        xlim(-1000,1000) + ylim(-500, 500)
+
+
+```
+
+## PC - colored by row
+
+```{r}
+ggplot(beta_PC, aes(x=PC1,y=PC2)) + geom_point(aes(color=row)) + theme_bw(base_size=32) + 
+  theme(legend.title = element_text(size=15), 
+        legend.text = element_text(size=10),
+        axis.text=element_text(size=12),
+        axis.title=element_text(size=14,face="bold"))+
+        ggtitle("PC-color by row") +
+        xlim(-1000,1000) + ylim(-500, 500)
+
+
+```
+
+## PC - colored by slide
+
+```{r}
+ggplot(beta_PC, aes(x=PC1,y=PC2)) + geom_point(aes(color=slide)) + theme_bw(base_size=32) + 
+  theme(legend.title = element_text(size=15), 
+        legend.text = element_text(size=10),
+        axis.text=element_text(size=12),
+        axis.title=element_text(size=14,face="bold")) +
+        ggtitle("PC-color by slide") +
+        xlim(-1000,1000) + ylim(-500, 500)
+
+
+
+```
+
+
+SampleSheet serialised
+
+```{r SampleSheet serialised}
+SampleSheet.serialised <- SampleSheet_edited %>%  select(c(-Sample_Name, -Sex, -sentrix_col, -Basename, -ucl.name, -sample.well, -Individual,-unique.identifier))
+
+#function for encoding qualitative variables with ordinal encoding
+encode_ordinal <- function(x, order = unique(x)) {
+  x <- as.numeric(factor(x, levels = order, exclude = NULL))
+  x
+}
+
+SampleSheet.serialised$Slide <- SampleSheet.serialised$Slide %>% as.numeric()
+SampleSheet.serialised$sentrix_row <- as.numeric(SampleSheet.serialised$sentrix_row)
+SampleSheet.serialised$Slide <- encode_ordinal(SampleSheet.serialised$Slide)
+
+SampleSheet.serialised$tissue <- encode_ordinal(SampleSheet.serialised$tissue)
+SampleSheet.serialised$germlayer <- encode_ordinal(SampleSheet.serialised$germlayer)
+SampleSheet.serialised$predicted.sex <- encode_ordinal(SampleSheet.serialised$predicted.sex)
+
+
+for (i in grep("-", SampleSheet.serialised$Gestational.age)){
+  temp <- as.list(strsplit(SampleSheet.serialised$Gestational.age[i], split = "-"))[[1]]
+  SampleSheet.serialised$Gestational.age[i] <- mean(c(as.numeric(temp[1]), as.numeric(temp[2])))
+}
+
+SampleSheet.serialised$Gestational.age <- as.numeric(SampleSheet.serialised$Gestational.age)
+
+#setting rownames
+rownames(SampleSheet.serialised) <- SampleSheet_edited$unique.identifier
+
+#changing in to dataframes because tibbles are weird and dont give numberical values
+SampleSheet.serialised <- as.data.frame(SampleSheet.serialised)
+
+# #droping gestational age column with NA
+SampleSheet.serialised  <- SampleSheet.serialised %>% filter(!row.names(SampleSheet.serialised) %in% c("S83_rib_Meso","S83_skin_Ecto"))
+
+
+#Sanity check
+SampleSheet.serialised$Slide %>% class()
+SampleSheet.serialised$sentrix_row %>% class()
+SampleSheet.serialised$tissue %>% class()
+SampleSheet.serialised$germlayer %>% class()
+SampleSheet.serialised$predicted.sex %>% class()
+SampleSheet.serialised$Gestational.age %>% class()
+SampleSheet.serialised %>% dim()
+
+```
+
+batchPCAcorr function
+
+```{r batchPCAcorr function}
+#batchPCAcorr
+batchPCAcorr <- function(pcs=NULL,batch=NULL,npcs=10){  
+  res <- matrix(nrow=ncol(batch),ncol=npcs,dimnames=list(colnames(batch),colnames(pcs)))
+  #ensure samples are in the same order
+  if(!(all.equal(rownames(pcs),rownames(batch)))){
+    stop("samples must the same in both PC and batch variable data (i.e. rows should be equivalent)")
+    }
+  #iterate through batch vars and PCs running the relevant test for association
+  for(m in rownames(res)){
+    cat <- ifelse(length(levels(batch[,m]))==2,TRUE,FALSE)
+      for(n in colnames(res)){
+        if(cat){
+          res[m,n] <- (pcs[,n] ~ batch[,m])$p.value
+          }else if(!(cat)){
+            if(typeof(levels(batch[,m]))!= "NULL"){
+              res[m,n] <- kruskal.test(pcs[,n] ~ batch[,m])$p.value
+              }else{
+               #fit <- lm(pcs[,n] ~ batch[,m])
+               #res[m,n] <- summary.lm(fit)$coefficients[2,4]
+                  res[m,n] <- cor.test(pcs[,n],batch[,m],method='spearman',
+                                 exact=F,continuity=T)$p.value
+        }
+        }
+      }
+    }
+  return(res)
+}  
+```
+
+Generating PCA - variable probability plot
+
+```{r Generating PCA - variable probability plot}
+rownames(beta_PC) <- SampleSheet_edited$unique.identifier
+rownames(SampleSheet.serialised) <- SampleSheet_edited$unique.identifier
+
+PC <-  beta_PC[1:53] %>%  as.data.frame()
+
+#correspondingly removing the column with gestation NA
+PC <- PC %>% filter(!row.names(PC) %in% c("S83_rib_Meso","S83_skin_Ecto"))
+
+SampleSheet.serialised %>% class()
+PC %>% class()
+PC %>% dim()
+SampleSheet.serialised %>% dim()
+res <- batchPCAcorr(pcs=PC, batch=SampleSheet.serialised, npcs=53)
+
+```
+
+## Correlation P value plot between PC and different variables
+
+```{r Correlation P value between PC and different variables}
+P_heat <- melt(res[,1:5])
+colnames(P_heat) <- c("variables", "PC", "P_value")
+P_value_Bon <- p.adjust(P_heat$P_value, method = "bonferroni")
+
+P_heat_Bon <- P_heat
+P_heat_Bon$P_value <- P_value_Bon
+
+ggplot(P_heat_Bon, aes(x = variables, y = PC, fill = P_value)) +
+  geom_tile(color = "black", height = 0.95, width = 0.95) +
+  geom_text(aes(label = format(P_value, scientific = TRUE, digits = 1)), color = "black", size = 4) +
+  scale_fill_gradient(low = "red", high = "white") +
+  coord_fixed() +
+  theme(axis.text.x = element_text(angle = 30))  +
+  ggtitle("Correlation P value between PC and different variables")
+
+
+```
+

@@ -1,0 +1,2354 @@
+---
+title: Data exploration PCA + variation plot 
+author: "Linfeng Wang"
+date: "12/04/2022"
+output:
+  html_document:
+    code_folding: hide
+    theme: united
+    toc: yes
+    toc_float:
+      collapsed: yes
+  html_notebook:
+    code_folding: hide
+    theme: united
+    toc: yes
+    toc_float:
+      collapsed: yes
+---
+
+```{r document.setup}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(message = FALSE)
+knitr::opts_chunk$set(fig.align = 'center')
+knitr::opts_chunk$set(fig.width = 9)
+knitr::opts_chunk$set(fig.height = 5)
+#knitr::knit_hooks$set(rgl = hook_rgl)
+```
+
+```{r loading packages}
+.libPaths("/home/linfeng/R/x86_64-pc-linux-gnu-library/3.4") 
+
+library(pacman)
+library(datasets)
+library(tidyverse)
+library(VennDiagram)
+library(devtools)
+#library(MethylToSNP)
+library(GGally)
+library(ggfortify)
+library(cowplot)
+library(psych)
+library(reshape)
+library(IlluminaHumanMethylationEPICanno.ilm10b2.hg19)
+# library(meffil)
+library(missMethyl)
+library(GenomicRanges)
+library("VennDiagram")
+library(readxl)
+library(tidyverse)
+library(ggvenn)
+library(segmenter)
+# library(Gviz)
+library(ComplexHeatmap)
+# library(TxDb.Hsapiens.UCSC.hg18.knownGene)
+library(chromswitch)
+library(rtracklayer)
+library(annotatr)
+library(boot)
+library(plotrix)
+
+
+pacman::p_load(pacman, dplyr, GGally, ggplot2, ggthemes, 
+               ggvis, httr, lubridate, plotly, rio, rmarkdown, 
+               shiny, stringr, tidyr)
+
+
+```
+
+```{r loading dataframes}
+  # setwd("/data/s1/fetal_EPIC_processed")
+  EPIC.norm.beta<- readRDS("/data/s1/fetal_EPIC_processed/Beta_matrices/EPIC.norm.beta.RDS")
+  SampleSheet_edited <- readRDS("/data/s1/fetal_EPIC_processed/samplesheets/SampleSheet_edited.RDS")
+  
+  EPIC.norm.beta <- as.data.frame(EPIC.norm.beta)
+
+  SampleSheet_edited <- as.data.frame(SampleSheet_edited)
+```
+
+Running meffill analysis
+```{r meffil}
+# options(mc.cores=6)
+# path_to_idat_files = "/home/linfeng/IDAT_pool"
+# samplesheet <- meffil.create.samplesheet(path_to_idat_files)
+# 
+# beta <- meffil.normalize.dataset(samplesheet, qc.file="qc/report.html", author="Linfeng", study="EPIC array", number.pcs=10)
+
+```
+Function for removing NAs from dataframe and samplesheet
+```{r}
+df_processing <- function(EPIC.norm.beta){
+  
+  #put unique identifier as header for EPIC.norm.beta.DF
+  list_ <- matrix(c(SampleSheet_edited$unique.identifier, SampleSheet_edited$Sample_Name), 
+                  nrow=2, ncol=dim(SampleSheet_edited)[1], byrow = TRUE)
+  
+  
+  for (i in seq(1,length(colnames(EPIC.norm.beta)))){
+    for (x in seq(1,length(list_[2,]))){
+      if (colnames(EPIC.norm.beta)[i] == list_[2,][x]) {
+        colnames(EPIC.norm.beta)[i] <- list_[1,][x]
+      }
+    }
+  }
+  
+  #reorganize data, preparing for variance study, removing NA sample
+  EPIC.norm.beta.DF <- as.data.frame(EPIC.norm.beta)
+  
+  EPIC.norm.beta.DF <-
+    EPIC.norm.beta.DF %>% 
+    select(contains("S"))
+  
+  #graphing example individual
+  # ggplot(EPIC.norm.beta.DF, aes(x = S48_brain_Ecto, y = S48_intestine_Endo)) + 
+  #   geom_point(alpha = 0.006)
+  # 
+  # par(mar=c(1,1,1,1))
+  # par("mar")
+  
+  #cor(EPIC.norm.beta.DF$S48_brain_Ecto, EPIC.norm.beta.DF$S48_intestine_Endo)
+  
+  print("EPIC.norm.beta.DF dim:")
+  print(dim(EPIC.norm.beta.DF))
+  
+  return(EPIC.norm.beta.DF)
+
+}
+
+SS_processing <- function(SampleSheet_edited){  
+
+  SampleSheet_edited <- SampleSheet_edited %>% filter(Individual != "NANA")
+  
+  SampleSheet_edited <- SampleSheet_edited %>% #removing label whose data is missing in EPIC data array
+  filter(unique.identifier != "S85_intestine_Endo") %>% 
+  filter(unique.identifier != "S54_brain_Ecto") %>% 
+  filter(unique.identifier != "S62_spine_Ecto")
+  # sum(is.na(row)) #check for 0s
+  # for (i in seq(1,length(m.values))){
+  #   #print(i)
+  #   print(sum(is.na(m.values[i])))
+  # }
+  print("SampleSheet dim:")
+  print(dim(SampleSheet_edited))
+  
+  return(SampleSheet_edited)
+}
+
+```
+
+```{r running of the Na removal functions}
+EPIC.norm.beta.DF <-  df_processing(EPIC.norm.beta)
+
+SampleSheet_edited <-  SS_processing(SampleSheet_edited)
+
+```
+
+
+sex prediction visualisation from Beta value
+```{r}
+manifest <- as.data.frame(getAnnotation(IlluminaHumanMethylationEPICanno.ilm10b2.hg19))
+
+sex_probes <- manifest %>% filter(chr == "chrY")  %>% row.names()
+
+
+sex_beta <- EPIC.norm.beta %>% filter(row.names(EPIC.norm.beta) %in% sex_probes)
+sex_beta <- df_processing(sex_beta)
+
+sex_beta <- melt(sex_beta)
+sex_beta$variable <- as.character(sex_beta$variable)
+
+
+#adding in predicted sex label
+list_ <- matrix(c(SampleSheet_edited$unique.identifier, SampleSheet_edited$predicted.sex),
+                  nrow=2, ncol=dim(SampleSheet_edited)[1], byrow = TRUE)
+
+sex_beta$predicted_sex <-  0
+
+for (i in seq(1,dim(sex_beta)[1])){
+  for (x in seq(1,length(list_[1,]))){
+    if (sex_beta$variable[i] == list_[1,][x]) {sex_beta$predicted_sex[i] <- list_[2,][x]}
+    }
+}
+
+
+#adding recorded sex label
+list_ <- matrix(c(SampleSheet_edited$unique.identifier, SampleSheet_edited$Sex), 
+                  nrow=2, ncol=dim(SampleSheet_edited)[1], byrow = TRUE)
+
+sex_beta$recorded_sex <-  0
+
+
+for (i in seq(1,dim(sex_beta)[1])){
+  for (x in seq(1,length(list_[1,]))){
+    if (sex_beta$variable[i] == list_[1,][x]) {sex_beta$recorded_sex[i] <- list_[2,][x]}
+    }
+}
+
+#turn unique label in to person label
+for (i in seq(1,dim(sex_beta)[1])){
+  temp <- strsplit(sex_beta$variable[i], split="_")[[1]]
+  sex_beta$variable[i]  <- paste(temp[1],temp[3], sep = "_")
+  }
+
+# sex_beta <- sex_beta %>% arrange(variable)
+```
+
+# recorded sex chrY beta values
+```{r}
+options(repr.plot.width=55, repr.plot.height=8)
+
+p <- ggplot(sex_beta, aes(x=variable, y=value, color=recorded_sex)) +
+  geom_violin(trim=FALSE)  +
+  scale_color_discrete(name=NULL) +
+  theme(legend.position="top", axis.text.x = element_text(angle = 80))
+
+p + stat_summary(fun=median, geom="point", size=0.8, color="red") +labs(title="ChrY prob spread for each individual (Recorded)",
+        x ="Individual", y = "Beta value")
+```
+As can be seen in the graph the sex can be distinguished from the distribution of beta value as clearly indicated by the violin plot and the median value as labelled by the red dot.
+
+The violin plot is graphed from chrY related probe beta value, as colored by recorded sex. As can be seen that the grey samples with NA for recorded sex can be correctly categorized by looking at the beta value distribution
+
+
+```{r}
+# Predicted sex from chrY beta values
+
+# p <- ggplot(sex_beta, aes(x=variable, y=value, color=predicted_sex)) +
+#   geom_violin(trim=FALSE)  +
+#   scale_color_discrete(name=NULL) +
+#   theme(legend.position="top", axis.text.x = element_text(angle = 30))
+# 
+# p + stat_summary(fun=median, geom="point", size=0.8, color="red") +labs(title="ChrY prob spread for each individual (Predicted)",
+#         x ="Individual", y = "Beta value")
+
+#In predicted sex, meffil correctly labeled the missing data according to the beta value distribution
+
+```
+
+
+
+
+
+cross hybridised + SNP probe removal
+```{r cross hybridised + SNP probe removal}
+
+crp.SNP.remove.func <- function(EPIC.norm.beta.DF, crp){
+
+  row.names.remove <- c(crp[,1])
+  
+  manifest <- as.data.frame(getAnnotation(IlluminaHumanMethylationEPICanno.ilm10b2.hg19))
+  CPG_rs <- rownames(manifest %>% select(CpG_rs) %>% filter(CpG_rs != "NA"))
+  CPG_maf <- rownames(manifest %>% select(CpG_maf) %>% filter(CpG_maf >= 0.05))
+  
+  #removing probs from the crp files
+  EPIC.norm.beta.DF <- EPIC.norm.beta.DF[!(row.names(EPIC.norm.beta.DF) %in% row.names.remove),]
+  
+  EPIC.norm.beta.DF <- EPIC.norm.beta.DF[!(row.names(EPIC.norm.beta.DF) %in% CPG_rs),]
+  # EPIC.norm.beta.DF <- EPIC.norm.beta.DF[!(row.names(EPIC.norm.beta.DF) %in% CPG_maf),]
+
+  print(c("No. of cross hybridised and snp probe removed:", length(row.names.remove)))
+  print(c("No. of CPG_rs probe removed:", length(CPG_rs)))
+  # print(c("No. of CPG_maf probe removed:", length(CPG_maf)))
+
+  return(EPIC.norm.beta.DF)
+}
+
+crp <- read.table("/home/linfeng/R_script/xycrp.csv" ,sep="\n", header=TRUE)
+EPIC.norm.beta.DF <- crp.SNP.remove.func(EPIC.norm.beta.DF, crp)
+```
+
+
+lm adjustion functions
+```{r lm adjustion functions}
+lm_zero_removal <- function(EPIC.norm.beta.DF){
+    for (i in seq(1, length(EPIC.norm.beta.DF))){ #give 0 values a very small value
+      print(c(i, "out of", length(EPIC.norm.beta.DF)))
+      for (x in seq(1, length(EPIC.norm.beta.DF[,i]))){
+        if(EPIC.norm.beta.DF[x,i]==0){
+          EPIC.norm.beta.DF[x,i] = EPIC.norm.beta.DF[x,i] + 1e-14
+          }
+      }
+    }
+    return(EPIC.norm.beta.DF)
+}
+
+
+lm_adjustion_func <- function(EPIC.norm.beta.DF, SampleSheet_edited){
+
+  print("===Taking variables===")
+  # make sure the slide, row and column variables are factors
+  slide = as.factor(SampleSheet_edited$Slide) #should not be adjusted for
+  row= as.factor(SampleSheet_edited$sentrix_row)
+  column = as.factor(SampleSheet_edited$sentrix_col) #only one level
+  sex = as.factor(SampleSheet_edited$predicted.sex)
+  age = as.factor(SampleSheet_edited$Gestational.age)
+
+  print("===Converting to M values===")
+
+  m.values <- log(EPIC.norm.beta.DF/(1-EPIC.norm.beta.DF)) #where beta rows are cpgs and columns are samples 
+  m.value.adj <- lm(t(m.values) ~ row + sex + slide) # make sure that the rownames of t(m.values) match the order of the samples that you extracted slide, row and column from
+  
+  print("===Converting back to beta===")
+  inter <- coef(m.value.adj)[1,]
+  res <- t(m.value.adj$residuals)
+  meth.data.adj <- res + inter[row(res)] #why add the residual to intercept
+
+  beta.adj <- exp(meth.data.adj)/(1+exp(meth.data.adj)) # transform from M values back to beta values
+  beta.adj <- as.data.frame(beta.adj)
+  rownames(beta.adj) <-rownames(EPIC.norm.beta.DF)
+
+  return(beta.adj)
+}
+
+```
+
+
+running of the lm_adjustion_function
+
+```{r running of the lm_adjustion_function}
+EPIC.norm.beta.DF <- lm_zero_removal(EPIC.norm.beta.DF) #takes a long time to run, make sure its not run every time if the variable is already loaded
+
+beta.adj <- lm_adjustion_func(EPIC.norm.beta.DF, SampleSheet_edited)
+
+```
+
+function for PCA analysis function calculated variance explained + PC
+
+```{r function for PCA analysis function calculated variance explained + PC}
+#PCA analysis function calculated variance explained
+pca_analysis_sdev <- function(beta_df){
+  print("===PCA analysis===")
+  beta.pca <- prcomp(t(beta_df), scale= TRUE)
+  print("===PCA ratio calculation===")
+  var_explained <- as.data.frame(beta.pca$sdev^2 / sum(beta.pca$sdev^2)) %>% add_column(seq(1, length(beta_df)))
+  print("===Graphing Scree plot===")
+  colnames(var_explained) <- c('PC', 'sample')
+  p2 <- ggplot(var_explained, aes(x=sample, y=PC)) + 
+    geom_bar(stat='identity') + 
+    xlab("Principal Component") + 
+    ylab("Variance Explained") +
+    ggtitle("Scree Plot")
+    # ylim(0, 1)
+  p2 + theme(axis.text.x = element_text(angle = 45, hjust = 1))  +
+        ggtitle("PCA analysis - variance explained") + ylim(0,0.23)
+  # scale_y_continuous(trans = "log10", limits = c(0, 1)) 
+}
+
+#PCA analysis function calculating Principle component
+pca_analysis_PC <- function(beta_df){
+  print("===PCA analysis===")
+  beta.pca <- prcomp(t(beta_df), scale= TRUE)
+  var_explained <- as.data.frame(beta.pca$sdev^2 / sum(beta.pca$sdev^2)) %>% add_column(colnames(beta_df))
+  
+  print("===Graphing dot plot===")
+  beta.pca$x %>% 
+  as.data.frame %>%
+  ggplot(aes(x=PC1,y=PC2)) + geom_point(alpha=0.6) + theme_bw(base_size=32) + 
+  labs(x=paste0("PC1: ",round(var_explained[[1]][1]*100,1),"%"),
+       y=paste0("PC2: ",round(var_explained[[1]][2]*100,1),"%")) +
+  theme(legend.title = element_text(size=15), 
+        legend.text = element_text(size=10),
+        axis.text=element_text(size=12),
+        axis.title=element_text(size=14,face="bold")) +
+        ggtitle("PCA analysis - PC")
+}
+```
+
+# PCA
+removing outliers
+```{r finding and removing outliers }
+
+# beta_PC %>% filter(PC1 < -1500) %>%  select(c(PC1, unique_label, sex, row, slide))
+
+
+beta.adj <- beta.adj %>% select(c(-S54_lung_Endo, -S2_skin_Ecto))
+SampleSheet_edited <- SampleSheet_edited %>% filter(unique.identifier != "S54_lung_Endo") %>% filter(unique.identifier != "S2_skin_Ecto")
+
+```
+
+
+## All samples (adjusted data) - variance explaind
+
+```{r}
+pca_analysis_sdev(beta.adj)
+```
+Analysis:top 5 PCs used to be able to contribute to around 50% the variation of the data. This is a god shape for Scree plot meaning top PCs can account ofr majoity of variation and therefore many factors can be disregarded. After removal of the two outliers, the top 5 contributes a bit less but still contribute to around 50% of total vairance
+
+## All samples (adjusted data) - PC
+
+```{r}
+pca_analysis_PC(beta.adj)
+```
+
+As shown there are two outliers that has high variation in PC1
+	
+They are:
+  S54_lung_Endo	-2253.399	S54_lung_Endo	M	05	204088030103
+  v	-1749.628	S2_skin_Ecto	F	01	203982200068
+  
+It also shows that there is redundancy in the data. This redundancy proves that PCA may be used to reduce the original data into a smaller number of new variables. After the removal of outliers, there has been a drecrease in variation by PC1
+
+
+Data organisation for producing PC plots with colour
+
+```{r Data organisation for producing PC plots with colour}
+beta.pca <- prcomp(t(beta.adj), scale= TRUE)
+
+beta_PC <-beta.pca$x %>% as.data.frame()
+
+beta_PC$germlayer= 0
+beta_PC$tissue= 0
+beta_PC$unique_label= 0
+beta_PC$gestation2w= 0
+beta_PC$gestation3w= 0
+beta_PC$sex= 0
+beta_PC$slide= 0
+beta_PC$row= 0
+
+
+for (i in seq(1, length(beta.adj))){
+  temp <- as.list(strsplit(colnames(beta.adj)[i], split="_"))[[1]]
+  beta_PC$germlayer[i] <- temp[3]
+  beta_PC$tissue[i] <- temp[2]
+  beta_PC$unique_label[i] <- colnames(beta.adj)[i]
+
+}
+# -2 is to minus the two outliers
+list_ <- matrix(c(SampleSheet_edited$unique.identifier, SampleSheet_edited$Gestational.age), 
+                  nrow=2, ncol=dim(SampleSheet_edited)[1], byrow = TRUE)
+
+for (i in seq(1,length(list_[2,]))){
+  if (is.na(list_[2,i])) {list_[2,i] <- 'Missing'}
+  else if (list_[2,i] == "9" | list_[2,i] == "9-10" ) {list_[2,i] <- "9-10"}
+  else if (list_[2,i] == "10" | list_[2,i] == "10-11" ) {list_[2,i] <- "10-11"}
+  else if (list_[2,i] == "11" | list_[2,i] == "11-12" ) {list_[2,i] <- "11-12"}
+  else if (list_[2,i] == "12" | list_[2,i] == "12-13" | list_[2,i] == "14" | list_[2,i] == "15" | list_[2,i] == "16") 
+    {list_[2,i] <- "12-16"}
+  else if (list_[2,i] == "17" | list_[2,i] == "18" ) {list_[2,i] <- "17-18"}
+  else {print(list_[2,i])}
+}
+
+beta_PC$gestation2w <- list_[2,]
+
+beta_PC %>% dim()
+list_ %>%  dim()
+list_ <- matrix(c(SampleSheet_edited$unique.identifier, SampleSheet_edited$Gestational.age), 
+                  nrow=2, ncol=dim(SampleSheet_edited)[1], byrow = TRUE)
+
+for (i in seq(1,length(list_[2,]))){
+  if (is.na(list_[2,i])) {list_[2,i] <- 'Missing'}
+  else if (list_[2,i] == "9" | list_[2,i] == "9-10" | list_[2,i] == "10" |list_[2,i] == "10-11" ) {list_[2,i] <- "9-11"}
+  else if (list_[2,i] == "11" | list_[2,i] == "11-12" | list_[2,i] == "12" | list_[2,i] == "12-13" ) {list_[2,i] <- "11-13"}
+  else if (list_[2,i] == "14" | list_[2,i] == "16" ) {list_[2,i] <- "14-16"}
+  else if (list_[2,i] == "17" | list_[2,i] == "18" ) {list_[2,i] <- "17-18"}
+  else {print(list_[2,i])}
+}
+
+beta_PC %>% dim()
+
+beta_PC$gestation3w <- list_[2,]
+beta_PC %>%  group_by(gestation3w) %>% summarise("number" = n())
+
+beta_PC$sex <- SampleSheet_edited$predicted.sex
+beta_PC$row <- SampleSheet_edited$sentrix_row
+beta_PC$slide <- SampleSheet_edited$Slide
+
+
+```
+
+## Summary histogram for original gestational age and count
+Shows that the number of the in each gestational age is unequal the missing columns are umbiguous age: e.g. the  column between 10 and 11 and 10-11
+```{r}
+summary_gestation<- SampleSheet_edited %>% 
+  group_by(Gestational.age) %>% 
+  summarise("number" = n()) %>%  arrange(Gestational.age)
+summary_gestation$Gestational.age[13] <- "NA"
+summary_gestation <- summary_gestation[c(11,12,1,2,3,4,5,6,7,8,9,10,13),]			
+
+barplot(summary_gestation$number, names.arg = summary_gestation$Gestational.age, main = "Summary histogram for gestational age and count", las=2)  
+
+```
+
+
+## Summary table for tissue and germlayer
+
+```{r}
+summary_germ_tissue <- SampleSheet_edited %>% 
+  group_by(germlayer, tissue) %>% 
+  summarise("number" = n())
+
+par(mar=c(5,4,4,4))
+barplot(summary_germ_tissue$number, names.arg = paste(summary_germ_tissue$germlayer, summary_germ_tissue$tissue, sep="_"),las=2, main= "Summary table for tissue and germlayer")  
+
+ggplot(summary_germ_tissue, aes(x=paste(summary_germ_tissue$germlayer, summary_germ_tissue$tissue, sep="_"), y=number)) + geom_bar(stat="identity") + theme(axis.text.x = element_text(angle = 30)) + xlab("Germ_Tissue") +
+ggtitle("Summary for tissue and germlayer")
+
+
+```
+The values with the highest counts are Ecto_brain, Endo_intestine, Meso_kidney.
+
+
+## PC - colored by Germlayer
+
+```{r}
+ggplot(beta_PC, aes(x=PC1,y=PC2)) + geom_point(aes(color=germlayer)) + theme_bw(base_size=32) + 
+  theme(legend.title = element_text(size=15), 
+        legend.text = element_text(size=10),
+        axis.text=element_text(size=12),
+        axis.title=element_text(size=14,face="bold"))+
+  geom_text(
+    label=beta_PC$germlayer, 
+    nudge_x = 0.25, nudge_y = 0.25, 
+    check_overlap = T,
+    alpha = 0.2
+  ) +
+  ggtitle("Colored by germlayer") +
+  xlim(-1000,1000) + ylim(-500, 500)
+
+
+```
+There is a clear three part stratification in the distribution.
+comparing to PC1, PC2 is already smeared out, and as we go down it will be more smeared out
+## PC - colored by Tissue
+
+```{r}
+ggplot(beta_PC, aes(x=PC1,y=PC2)) + geom_point(aes(color=tissue)) + theme_bw(base_size=32) + 
+  theme(legend.title = element_text(size=15), 
+        legend.text = element_text(size=10),
+        axis.text=element_text(size=12),
+        axis.title=element_text(size=14,face="bold"))+
+  geom_text(
+    label=beta_PC$tissue, 
+    nudge_x = 0.25, nudge_y = 0.25, 
+    check_overlap = T,
+    alpha = 0.2
+  ) +
+  ggtitle("Colored by tissue") +
+  xlim(-1000,1000) + ylim(-500, 500)
+
+```
+The tripartisan distribution from the germlayer plot is similarly replicated here in terms of tissue as the three prominant tissue-germlayers part contributes the most to this
+
+After adjusting for slide:
+the tripartisan distribution is not as clearly seem.
+
+## PC - colored by Gestational Age (2 weeks)
+
+```{r}
+ggplot(beta_PC, aes(x=PC1,y=PC2)) + geom_point(aes(color=gestation2w)) + theme_bw(base_size=32) + 
+  theme(legend.title = element_text(size=15), 
+        legend.text = element_text(size=10),
+        axis.text=element_text(size=12),
+        axis.title=element_text(size=14,face="bold"))+
+  geom_text(
+    label=beta_PC$gestation2w, 
+    nudge_x = 0.25, nudge_y = 0.25, 
+    check_overlap = T,
+    alpha = 0.15
+  ) +
+  ggtitle("Colored by gestational age (2w)")+
+  xlim(-1000,1000) + ylim(-500, 500)
+
+```
+
+## PC - colored by Gestational Age (3 weeks)
+
+```{r}
+ggplot(beta_PC, aes(x=PC1,y=PC2)) + geom_point(aes(color=gestation3w)) + theme_bw(base_size=32) + 
+  theme(legend.title = element_text(size=15), 
+        legend.text = element_text(size=10),
+        axis.text=element_text(size=12),
+        axis.title=element_text(size=14,face="bold")) +
+  geom_text(
+    label=beta_PC$gestation3w, 
+    nudge_x = 0.25, nudge_y = 0.25, 
+    check_overlap = T,
+    alpha = 0.15
+  ) +
+  ggtitle("Colored by GA (3w)") +
+  xlim(-1000,1000) + ylim(-500, 500)
+
+```
+
+## PC - colored by Sex
+
+```{r}
+ggplot(beta_PC, aes(x=PC1,y=PC2)) + geom_point(aes(color=sex)) + theme_bw(base_size=32) + 
+  theme(legend.title = element_text(size=15), 
+        legend.text = element_text(size=10),
+        axis.text=element_text(size=12),
+        axis.title=element_text(size=14,face="bold"))+
+        ggtitle("PC-color by sex") +
+        xlim(-1000,1000) + ylim(-500, 500)
+
+
+```
+
+## PC - colored by row
+
+```{r}
+ggplot(beta_PC, aes(x=PC1,y=PC2)) + geom_point(aes(color=row)) + theme_bw(base_size=32) + 
+  theme(legend.title = element_text(size=15), 
+        legend.text = element_text(size=10),
+        axis.text=element_text(size=12),
+        axis.title=element_text(size=14,face="bold"))+
+        ggtitle("PC-color by row") +
+        xlim(-1000,1000) + ylim(-500, 500)
+
+
+```
+
+## PC - colored by slide
+
+```{r}
+ggplot(beta_PC, aes(x=PC1,y=PC2)) + geom_point(aes(color=slide)) + theme_bw(base_size=32) + 
+  theme(legend.title = element_text(size=15), 
+        legend.text = element_text(size=10),
+        axis.text=element_text(size=12),
+        axis.title=element_text(size=14,face="bold")) +
+        ggtitle("PC-color by slide") +
+        xlim(-1000,1000) + ylim(-500, 500)
+
+
+
+```
+Beta distribution as a histogram
+```{r}
+EPIC.norm.beta.DF.long <- EPIC.norm.beta.DF %>%                          # Apply pivot_longer function
+  pivot_longer(colnames(EPIC.norm.beta.DF)) %>% 
+  as.data.frame()
+
+ggplot(EPIC.norm.beta.DF.long, aes(x = value)) +    # Draw each column as histogram
+  geom_histogram()+ xlab("Beta value")
+
+
+beta.adj.long <- beta.adj %>%                          # Apply pivot_longer function
+  pivot_longer(colnames(beta.adj)) %>% 
+  as.data.frame()
+
+ggplot(beta.adj.long, aes(x = value)) +    # Draw each column as histogram
+  geom_histogram(color="white") + xlab("Beta value") + geom_density(col = "#1b98e0", size = 2)
+
+beta.adj.long <- beta.adj %>%                          # Apply pivot_longer function
+  pivot_longer(colnames(beta.adj)) %>% 
+  as.data.frame()
+
+var.thresh.beta <- beta.adj %>% filter(row.names(beta.adj) %in% var.threshold$probes)
+var.thresh.beta.long <- var.thresh.beta %>%                          # Apply pivot_longer function
+  pivot_longer(colnames(var.thresh.beta)) %>% 
+  as.data.frame()
+
+ggplot(var.thresh.beta.long, aes(x = value)) +    # Draw each column as histogram
+  geom_histogram(color="white") + xlab("Beta value") + geom_density(col = "#1b98e0", size = 2)
+
+
+```
+
+```{r}
+beta.adj.long <- beta.adj %>%                          # Apply pivot_longer function
+  pivot_longer(colnames(beta.adj)) %>% 
+  as.data.frame()
+
+ggplot(beta.adj.long, aes(x = value)) +    # Draw each column as histogram
+  geom_histogram(color="white")
+```
+
+SampleSheet serialised
+
+```{r SampleSheet serialised}
+SampleSheet.serialised <- SampleSheet_edited %>%  select(c(-Sample_Name, -Sex, -sentrix_col, -Basename, -ucl.name, -sample.well, -Individual,-unique.identifier))
+
+#function for encoding qualitative variables with ordinal encoding
+encode_ordinal <- function(x, order = unique(x)) {
+  x <- as.numeric(factor(x, levels = order, exclude = NULL))
+  x
+}
+
+SampleSheet.serialised$Slide <- SampleSheet.serialised$Slide %>% as.numeric()
+SampleSheet.serialised$sentrix_row <- as.numeric(SampleSheet.serialised$sentrix_row)
+SampleSheet.serialised$Slide <- encode_ordinal(SampleSheet.serialised$Slide)
+
+SampleSheet.serialised$tissue <- encode_ordinal(SampleSheet.serialised$tissue)
+SampleSheet.serialised$germlayer <- encode_ordinal(SampleSheet.serialised$germlayer)
+SampleSheet.serialised$predicted.sex <- encode_ordinal(SampleSheet.serialised$predicted.sex)
+
+
+for (i in grep("-", SampleSheet.serialised$Gestational.age)){
+  temp <- as.list(strsplit(SampleSheet.serialised$Gestational.age[i], split = "-"))[[1]]
+  SampleSheet.serialised$Gestational.age[i] <- mean(c(as.numeric(temp[1]), as.numeric(temp[2])))
+}
+
+SampleSheet.serialised$Gestational.age <- as.numeric(SampleSheet.serialised$Gestational.age)
+
+#setting rownames
+rownames(SampleSheet.serialised) <- SampleSheet_edited$unique.identifier
+
+#changing in to dataframes because tibbles are weird and dont give numberical values
+SampleSheet.serialised <- as.data.frame(SampleSheet.serialised)
+
+# #droping gestational age column with NA
+# SampleSheet.serialised  <- SampleSheet.serialised %>% filter(!row.names(SampleSheet.serialised) %in% c("S83_rib_Meso","S83_skin_Ecto"))
+
+
+#Sanity check
+SampleSheet.serialised$Slide %>% class()
+SampleSheet.serialised$sentrix_row %>% class()
+SampleSheet.serialised$tissue %>% class()
+SampleSheet.serialised$germlayer %>% class()
+SampleSheet.serialised$predicted.sex %>% class()
+SampleSheet.serialised$Gestational.age %>% class()
+SampleSheet.serialised %>% dim()
+
+```
+
+batchPCAcorr function
+
+```{r batchPCAcorr function}
+#batchPCAcorr
+batchPCAcorr <- function(pcs=NULL,batch=NULL,npcs=10){  
+  res <- matrix(nrow=ncol(batch),ncol=npcs,dimnames=list(colnames(batch),colnames(pcs)))
+  #ensure samples are in the same order
+  if(!(all.equal(rownames(pcs),rownames(batch)))){
+    stop("samples must the same in both PC and batch variable data (i.e. rows should be equivalent)")
+    }
+  #iterate through batch vars and PCs running the relevant test for association
+  for(m in rownames(res)){
+    cat <- ifelse(length(levels(batch[,m]))==2,TRUE,FALSE)
+      for(n in colnames(res)){
+        if(cat){
+          res[m,n] <- (pcs[,n] ~ batch[,m])$p.value
+          }else if(!(cat)){
+            if(typeof(levels(batch[,m]))!= "NULL"){
+              res[m,n] <- kruskal.test(pcs[,n] ~ batch[,m])$p.value
+              }else{
+               #fit <- lm(pcs[,n] ~ batch[,m])
+               #res[m,n] <- summary.lm(fit)$coefficients[2,4]
+                  res[m,n] <- cor.test(pcs[,n],batch[,m],method='spearman',
+                                 exact=F,continuity=T)$p.value
+        }
+        }
+      }
+    }
+  return(res)
+}  
+```
+
+Generating PCA - variable probability plot
+
+```{r Generating PCA - variable probability plot}
+rownames(beta_PC) <- SampleSheet_edited$unique.identifier
+rownames(SampleSheet.serialised) <- SampleSheet_edited$unique.identifier
+
+PC <-  beta_PC[1:53] %>%  as.data.frame()
+
+#correspondingly removing the column with gestation NA
+PC <- PC %>% filter(!row.names(PC) %in% c("S83_rib_Meso","S83_skin_Ecto"))
+SampleSheet.serialised <- SampleSheet.serialised %>% as.numeric()
+
+PC %>% class()
+SampleSheet.serialised %>% class()
+res <- batchPCAcorr(pcs=PC, batch=SampleSheet.serialised, npcs=53)
+
+```
+
+## Correlation P value plot between PC and different variables
+
+```{r Correlation P value between PC and different variables}
+P_heat <- melt(res[,1:5])
+colnames(P_heat) <- c("variables", "PC", "P_value")
+P_value_Bon <- p.adjust(P_heat$P_value, method = "bonferroni")
+
+P_heat_Bon <- P_heat
+P_heat_Bon$P_value <- P_value_Bon
+
+ggplot(P_heat_Bon, aes(x = variables, y = PC, fill = P_value)) +
+  geom_tile(color = "black", height = 0.95, width = 0.95) +
+  geom_text(aes(label = format(P_value, scientific = TRUE, digits = 1)), color = "black", size = 4) +
+  scale_fill_gradient(low = "red", high = "white") +
+  coord_fixed() +
+  theme(axis.text.x = element_text(angle = 30))  +
+  ggtitle("Correlation P value between PC and different variables")
+
+
+```
+Before silde adjustment:
+This shows P-value of of correlation, there is relatively high confidence that tissue and germlayer contributes largely to the variation in PC1 and PC2, whereas sex and gestational age contributes the least.
+
+After removal of the outliers, it can be seen that germlayer has higher certainty in playing a role in the variation of PC1.
+
+After slide adjustment:
+germlayer and tissue effect appears to be removed leaving small slide effect on PC1
+# Variation calculation
+
+#variation visualisation function
+
+```{r variation visaulisation function}
+
+threshold.curve <- function(x) {
+  if (x >= 0.2){
+    y <- x/2
+  }
+  return(y)
+}
+
+#visaulisation of Van Baak 0.2, 1/3 threshold
+variance_vis_func <- function(variationVB){
+  vb <- ggplot(variationVB, aes(x=interindividual_var, y=germ_var)) + 
+    geom_point(alpha = 0.006) + 
+    geom_vline(xintercept=0.2, color = "green", ) + 
+    geom_abline(intercept = 0, slope = 1/2, color = "green") +
+    xlim(0, 1) + ylim(0,1) + ggtitle("Inter/intra-individual Variation") +
+    xlab("Interindividual variation") + ylab("Intraindividual variation (germ layers)")+
+    stat_function(fun = threshold.curve, geom = "area", fill = "blue", alpha = 0.2)
+  
+  ggExtra::ggMarginal(vb, type = "histogram")
+}
+
+```
+
+## Applied version of variation calculation - No average, just substraction and find max
+```{r No average, just substraction and find max - THIS IS THE ONE THATS USED}
+var_func1 <- function(beta.adj){
+  #calculating interindividual variation function
+  print("===calculating interindividual variation===")
+  #removing non-pair single samples  -	S2_liver_Endo is removed because it is singled out after outlier removal
+  singles.removed <- beta.adj[,order(names(beta.adj))]  %>% select(c(-S85_kidney_Meso, -S62_intestine_Endo, -S2_liver_Endo))
+  # singles.removed <- beta.adj[,order(names(beta.adj))]  %>% select(c(-S85_kidney_Meso, -S62_intestine_Endo, -S54_lung_Endo)) #before removal of the outlier S54_lung_Endo and S2_skin_Ecto
+  rownames(singles.removed) <- rownames(beta.adj)
+  
+  individual_variation <- matrix(ncol = 0, nrow = dim(singles.removed)[1]) %>% as.data.frame()
+  #average value for tissue within each individual
+  for (a in seq(1,length(colnames(singles.removed)), by=2)){
+    b = a+1
+    individual_variation <- individual_variation %>% add_column((singles.removed[a]+singles.removed[b])/2)
+  }
+  # for each probe, individual with max variation - individual with min variation
+  individual_variation[, "interindividual_var"] <- 
+  apply(individual_variation[, 1:ncol(individual_variation)], 1, max) - apply(individual_variation[, 1:ncol(individual_variation)], 1, min)
+
+  
+  #tissue variation calculation
+  
+  print("===calculating germ layer variation with in an individual===")
+  
+  germ_variation <- matrix(ncol = 0, nrow = dim(singles.removed)[1]) %>% as.data.frame()
+
+  i <- 0
+  
+  for (a in seq(1,length(colnames(singles.removed)), by=2)){
+    i <- i+1
+    b <-  a+1
+    germ_variation <- germ_variation %>% add_column((abs(singles.removed[a]-singles.removed[b])))
+    
+    germ1 <- as.list(strsplit(colnames(singles.removed[a]), split="_"))[[1]]
+    germ2 <- as.list(strsplit(colnames(singles.removed[b]), split="_"))[[1]]
+    #pair wise inter tissue difference calculation
+    names(germ_variation)[i] <- paste(germ1[[1]],germ1[[3]],germ2[[3]],sep="_")
+  }
+  # head(germ_variation)
+  
+  print("===calculating mean of intergerm layer variation variation for each probe===")
+  #Gather the germlayer difference together
+
+  germ.diff.mean <- matrix(ncol = 0, nrow = dim(singles.removed)[1]) %>% as.data.frame()
+  
+  #get the max of the germlayer pair difference
+  # n <- length(germ_variation)
+  # sort(germ_variation,partial=n-1)[n-1]
+  
+  germ.diff.mean[, "germ_var"] <- apply(germ_variation, 1, max)
+  
+  
+  
+  print("===Final processes===")
+  variationVB <- matrix(ncol=0, nrow=dim(germ.diff.mean)[1]) %>% as.data.frame()
+  
+  # print("==========")
+  # print(colnames(variationVB))
+  # print("==========")
+  
+  variationVB <- variationVB %>% add_column(rownames(singles.removed))
+  variationVB <- variationVB %>% add_column(individual_variation$interindividual_var)
+  variationVB <- variationVB %>% add_column(germ.diff.mean$germ_var)
+  # variationVB <- variationVB %>% add_column(germ.diff.mean$Ecto_Endo)
+  # variationVB <- variationVB %>% add_column(germ.diff.mean$Endo_Meso)
+  # variationVB <- variationVB %>% add_column(germ.diff.mean$Meso_Ecto)
+
+  names(variationVB) <- c("probes", "interindividual_var", "germ_var")
+  
+  # print("==========")
+  # print(colnames(variationVB))
+  # print("==========")
+
+  print("===Done!===")
+
+  return(variationVB)
+}
+
+
+```
+
+
+## Summary table for tissue and germlayer
+
+```{r tissue pair count summary plot}
+
+tissue_pair = c()
+
+for (a in seq(1,length(colnames(singles.removed)), by=2)){
+  b <-  a+1
+
+  germ1 <- as.list(strsplit(colnames(singles.removed[a]), split="_"))[[1]]
+  germ2 <- as.list(strsplit(colnames(singles.removed[b]), split="_"))[[1]]
+  #pair wise inter tissue difference calculation
+  tissue <- paste(germ1[[2]],germ2[[2]],sep="_")
+  tissue_pair <-c(tissue_pair, tissue)
+}
+
+tissue_pair <- tissue_pair %>% as.data.frame()
+names(tissue_pair) <- "tissues"
+summary_tissue_pair <- tissue_pair %>% 
+  group_by(tissues) %>% 
+  summarise("number" = n())
+
+summary_tissue_pair
+dim(summary_tissue_pair)
+ggplot(summary_tissue_pair, aes(x=tissues, y=number)) + geom_bar(stat="identity") + theme(axis.text.x = element_text(angle = 30)) +   geom_text(aes(label=number), vjust=1.5,hjust=0.5, color="white", size=6) +
+    ggtitle("Summary table for tissue and germlayer)
+
+```
+
+```{r}
+variationVB <- var_func1(beta.adj)
+
+variance_vis_func(variationVB)
+
+```
+Green line delineates the threshold set by Van Baak:
+"To focus on robust SIV we restricted our analysis to probes with interindividual variation that was at least 0.2 delta β and three times greater than tissue-specific variation."
+
+```{r}
+# rownames(beta.adj[,order(names(beta.adj))]  %>% select(c(-S85_kidney_Meso, -S62_intestine_Endo, -S54_lung_Endo)))
+# 
+# rownames(beta.adj %>% select(c(-S85_kidney_Meso, -S62_intestine_Endo, -S54_lung_Endo)))
+# 
+# beta.adj %>% select(c(-S85_kidney_Meso, -S62_intestine_Endo, -S54_lung_Endo)) %>%  rownames()
+```
+
+
+## boxplot showing intra-individual variation
+
+```{r}
+boxplot(variationVB[4:6])
+```
+
+## Top10% percent of inter individual variance
+```{r}
+var.threshold <- variationVB %>% filter(interindividual_var >=0.2) %>% filter(interindividual_var/2 > germ_var)
+
+var.thresh.change <- matrix(ncol=2, nrow=0) %>% as.data.frame()
+set.seed(123)
+for(x in seq(3, 1,by=-0.2)){
+  temp <- variationVB %>% filter(interindividual_var >=0.2) %>% filter(interindividual_var/x > germ_var) %>% select(probes)
+  len.SiV <- dim(temp)[1]
+  SiV.probe <- temp[,1]
+  rand.probe <- sample(row.names(EPIC.norm.beta.DF), len.SiV)
+  a <- length(Reduce(intersect,list(SiV.probe, me.cpgs)))
+  b <- length(Reduce(intersect,list(rand.probe, me.cpgs)))
+  odds.ratio <- a/b
+  entry <- c(x, odds.ratio)
+  var.thresh.change <- rbind(var.thresh.change, entry)
+}
+
+colnames(var.thresh.change) <- c('slope', 'odds.ratio')
+
+ggplot(var.thresh.change, aes(x=slope, y=odds.ratio)) + geom_line() + ggtitle('Effect of threshold slope on the odds ratio') + theme(plot.title=element_text(hjust=0.5)) +  xlab('Threshold slope') + ylab('Odds ratio')
+
+
+
+
+```
+#implementation of result from the above graph
+```{r}
+var.threshold <- variationVB %>% filter(interindividual_var >=0.2) %>% filter(interindividual_var/2 > germ_var)
+
+
+#the filtered out SiV sites
+identified.siv <- var.threshold$probes
+identified.siv %>% length()
+
+```
+
+#Loading established SIV, CpGs
+```{r Loading established SIV, CpGs}
+# 450k ME probes from Van Baak et al, Gen Biol 2017
+# SIV
+siv.cpgs = readRDS('~/SIV_ESS/SIV_unflitered_cgs.RDS')
+#siv.cpgs = readRDS(file = 'SIV_filtered_cgs.RDS') #856
+# ESS
+ess.cpgs = readRDS("~/SIV_ESS/ess_unflitered_cgs.RDS")
+#ess.cpgs = readRDS(file = 'ess_filtered_cgs.RDS') #1184
+
+# MEs from WGBS screen (filtered list of 675 MEs published in Kessler et al Science Advances, 2018)
+# this is true genome-wide data, so relatively few MEs intersect the EPIC array....
+me.wgbs.gr = readRDS("~/SIV_ESS/ME.clusters.0.15_inter.1_3_intra.SNP_60.50_to_300_gap.67_prop.RDS")
+
+# extract EPIC CpGs from the WGBS MEs 
+ME.clusters.0.15_inter.1_3_intra.SNP_60.50_to_300_gap.67_prop = readRDS("/mnt/ing-s1/EMPHASIS/EMPHASIS_EPIC/gambia/EPIC_manifest/cpglocs.epic.gr.RDS")
+me.epic.wgbs = subsetByOverlaps(epic.cpgs.gr,ME.clusters.0.15_inter.1_3_intra.SNP_60.50_to_300_gap.67_prop)$cpg
+
+# all me cpgs 
+me.cpgs = Reduce(union, list(ess.cpgs, siv.cpgs, me.epic.wgbs))
+
+```
+
+#Finding intersect between identidied siv and established siv
+```{r Finding intersect between identidied siv and established siv}
+
+me.cpgs = Reduce(union, list(ess.cpgs, siv.cpgs, me.epic.wgbs))
+
+k450.rowname <- Foetal_ICH_beta_mat_adjusted_450k %>%  row.names()
+identified.450k.overlap <- Reduce(intersect,list(identified.siv, k450.rowname))
+
+
+length(identified.siv)
+length(identified.450k.overlap)
+length(me.cpgs) 
+length(Reduce(intersect,list(identified.450k.overlap, me.cpgs))) 
+
+
+#Ven graph can't be drawn in rmd for some reason
+grid.newpage()
+draw.pairwise.venn(area1 = length(identified.siv),
+                   area2 = length(me.cpgs),
+                   cross.area = length(Reduce(intersect,list(identified.siv, me.cpgs))))
+
+length(Reduce(intersect,list(identified.siv, siv.cpgs)))
+
+identified.siv %>% length()
+siv.cpgs %>% length()
+
+#can't be graphed in rmd for some reason
+grid.newpage()
+draw.pairwise.venn(area1 = 2605,
+                   area2 = 2423,
+                   cross.area = 277)
+```
+
+```{r}
+Foetal_ICH_beta_mat_adjusted_450k <- readRDS("/data/s1/fetal_EPIC_processed/Beta_matrices/Foetal_ICH_beta_mat_adjusted_450k.RDS")
+
+k450.rowname <- Foetal_ICH_beta_mat_adjusted_450k %>%  row.names()
+GO.background = Reduce(intersect, list(row.names(EPIC.norm.beta.DF), k450.rowname))
+
+```
+
+
+# Enrichment Study-GO
+```{r GO}
+gst <- gometh(sig.cpg=identified.siv, all.cpg=GO.background, collection="GO", array.type="EPIC", prior.prob = T, sig.genes = T, plot.bias=TRUE)
+
+
+```
+## topGSA(gst, n=10)
+
+```{r}
+topGSA(gst, n=10)
+```
+
+```{r}
+enrich.go <- topGSA(gst, n=10)
+enrich.go <- enrich.go %>% as.data.frame()
+enrich.go %>% head()
+
+ggplot(enrich.go, aes(x = TERM, y = FDR)) + geom_bar(stat="identity") + coord_flip()
+
+ggplot(enrich.kegg, aes(x = Description, y = FDR_log)) + geom_bar(stat="identity", fill = "#05C3DE") + 
+  coord_flip() +
+  geom_hline(yintercept=-log10(0.05), linetype="dashed", color = "red") + 
+  ylab("False discovery rate: -log10(FDR)") + 
+  ggtitle("KEGG term development") + 
+  ylim(0,2.2) +xlab("") 
+
+```
+# Enrichment Study-KEGG
+```{r}
+gstKegg <- gometh(sig.cpg=identified.siv, all.cpg=GO.background, collection="KEGG", array.type="EPIC", prior.prob = T, sig.genes = T, plot.bias=TRUE)
+
+```
+
+```{r}
+enrich.kegg %>% head()
+
+```
+
+```{r}
+library(ggallin)
+
+
+enrich.kegg <- topGSA(gstKegg, n=10) 
+enrich.kegg <-  enrich.kegg %>% as.data.frame()
+enrich.kegg <-  enrich.kegg %>% arrange(desc(FDR))
+
+enrich.kegg %>% head()
+# 
+# enrich.kegg  <- within(enrich.kegg , 
+#                    Description <- factor(Description, 
+#                                       levels=names(sort(table(FDR), 
+#                                                         decreasing=TRUE))))
+
+enrich.kegg$Description <- factor(enrich.kegg$Description,                                  
+                  levels = enrich.kegg$Description[order(enrich.kegg$FDR, decreasing = TRUE)])
+
+enrich.kegg$FDR_log <- -log10(enrich.kegg$FDR)
+
+ggplot(enrich.kegg, aes(x = Description, y = FDR_log)) + geom_bar(stat="identity", fill = "#05C3DE") + 
+  coord_flip() +
+  geom_hline(yintercept=-log10(0.05), linetype="dashed", color = "red") + 
+  ylab("False discovery rate: -log10(FDR)") + 
+  ggtitle("KEGG term enrichment analysis") + 
+  ylim(0,2.2) +xlab("") 
+
+```
+
+```{r SIV-ESS loci analysis}
+
+library(GenomicRanges)
+library("VennDiagram")
+library(readxl)
+library(tidyverse)
+library(ggvenn)
+
+```
+
+# Proximity analysis
+proximity analysis on filtered out sivs
+```{r}
+#creating df to save data, p1-position1, p2-position2, beta-correlation between the two points, distance-distance between the two points
+cor.dis <- matrix(ncol =4) %>%  as.data.frame()
+names(cor.dis) <-c("p1", "p2", "beta", "distance")
+
+#get full info of identified CpGs from the manifest
+all.cpgs <- manifest %>% filter(Name %in% var.threshold$probes)
+chr <- unique(all.cpgs$chr)
+
+#get the correlations for each pair combination
+for (x in chr){
+  print(x)
+  print(paste(which(chr == x), " out of ", length(chr)))
+  print("============")
+  list.beta <- beta.adj %>% filter(row.names(beta.adj) %in% all.cpgs$Name[all.cpgs$chr==x])
+  
+  cor.chr <- cor(t(list.beta), method = "spearman")  %>% as.data.frame()
+  cor.len = dim(cor.chr)[1]
+  pairChr <- matrix(ncol= 4) %>% as.data.frame()
+  names(pairChr) <-c("p1", "p2", "beta", "distance")
+  
+  for (a in seq(1,cor.len[1]-1)){
+    for (b in seq(1,cor.len[1]-a)){
+      # print(c(a, b))
+      # print(cor.chr[a, a+b])
+      p1 <- row.names(cor.chr)[a]
+      p2 <-  colnames(cor.chr)[a+b]
+      dis1 <- all.cpgs %>% filter(Name==p1) %>% select(pos)
+      dis2 <- all.cpgs %>% filter(Name==p2) %>% select(pos)
+
+      beta <- cor.chr[a, a+b]
+      dis <- abs(dis1 - dis2)
+
+      insert.row <- c(p1[[1]], p2[[1]], beta[[1]], dis$pos)
+      pairChr <- rbind(pairChr, insert.row)
+    }
+  }
+  
+  pairChr <- na.omit(pairChr)
+  
+  cor.dis <- rbind(cor.dis, pairChr)
+}
+
+cor.dis <- na.omit(cor.dis)
+
+cor.dis <- cor.dis %>% arrange(distance)
+cor.dis$distance <- cor.dis$distance %>% as.numeric()
+cor.dis$beta <- abs(as.numeric(cor.dis$beta))
+
+cor.dis$bin <- ceiling(cor.dis$distance/10000)
+unique_bin <- unique(cor.dis$bin) %>% sort()
+
+bin.cor <- matrix(ncol=2) %>% as.data.frame()
+
+for (x in unique_bin){
+  temp <- cor.dis %>% filter(bin == x)
+  #calculating mean of the values between each bin range(10000)
+  a <- c(x*10000, mean(as.numeric(temp$beta)))
+  bin.cor <- rbind(bin.cor, a)
+}
+names(bin.cor) <- c("bin","cor")
+bin.cor <- na.omit(bin.cor)
+# bin.cor$bin %>% max()
+ggplot(bin.cor, aes(x=bin, y=cor)) + geom_point(alpha = 0.03) +
+  xlab("distance between pairs of CpGs") + ylab("cor_score") +
+    ggtitle("Proximity study: effect of distance on correlation score")
+
+```
+
+```{r}
+cluster.no <- c()
+for (i in seq(1,20000, by=1000)){
+  cor.dis$bin <- floor(cor.dis$distance/i)
+  unique_bin <- unique(cor.dis$bin) %>% sort()
+  cluster.no <- c(cluster.no, length(unique_bin))
+}
+
+prox.size <- seq(1,20000,by=1000)
+prox.df = data.frame(cluster.no, prox.size)
+
+ggplot(prox.df, aes(x=prox.size, y=cluster.no)) + geom_line()+
+    ggtitle("Proximity study: effect of cluster size on cluster number") + 
+  ylab("Number of clusters") + 
+  xlab("Cluster boundary size") + xlim(0,13000)
+
+```
+
+# Declustering
+```{r declustering}
+library(tidygenomics)
+
+cpg.sub <- var.threshold$probes
+locs <- readRDS("/home/linfeng/../../../data/s1/EMPHASIS/EMPHASIS_EPIC/gambia/EPIC_manifest/cpglocs.epic.gr.RDS")
+locs.meta <- locs[mcols(locs)$cpg %in% cpg.sub, ]
+chr_ <- seqnames(locs.meta)
+input <- data.frame(ranges(locs.meta), id = mcols(locs.meta)$cpg, chromosome = chr_)
+cluster.df <- data.frame(genome_cluster(input, by = c("chromosome","start", "end"), max_distance =5000))  
+cluster.df <- cluster.df[order(cluster.df$chromosome, cluster.df$cluster_id),]
+
+unique(cluster.df$cluster_id) %>% length()
+
+head(cluster.df)
+```
+
+```{r}
+locs.meta
+```
+
+
+```{r}
+#Sampling one probe from each cluster
+decluster.df <- matrix(ncol = 6, nrow = 0) %>%  as.data.frame()
+for (i in unique(cluster.df$cluster_id)){
+  temp <- cluster.df %>% filter(cluster_id == i) %>% sample_n(1)
+  decluster.df <- rbind(decluster.df, temp)
+}
+
+decluster.df$cluster_id %>% unique()row %>% length()
+```
+
+
+```{r}
+#identifying clusters with >=2 Cpgs
+CpG_decluster <- c()
+count <- 0
+for (x in seq(1, length(unique(cluster.df$cluster_id)))){
+  t <- cluster.df %>% filter(cluster_id == unique(cluster.df$cluster_id)[x]) %>% select(id)
+  if (length(t[,1]) >=2){
+    CpG_decluster <- c(CpG_decluster, t[,1])
+    count <- count + 1
+  }
+}
+print(count) #320 
+length(CpG_decluster) #907
+
+#calculating pairwise average of correlation for each cluster
+cor.cluster <- matrix(ncol=2, nrow=0) %>% as.data.frame()
+
+for (x in seq(1, length(unique(cluster.df$cluster_id)))){
+  t <- cluster.df %>% filter(cluster_id == unique(cluster.df$cluster_id)[x]) %>% select(id)
+  if (length(t[,1]) >=2){
+    t1 <- EPIC.norm.beta.DF %>% filter(row.names(EPIC.norm.beta.DF) %in% t[,1])
+    t2 <- cor(t(t1), method = c("spearman"))
+    a <- (sum(abs(t2)) - dim(t2)[1])/2 #calculating sum of cor (sum of on triangle of the table)
+    b <- (dim(t2)[1]^2 - dim(t2)[1])/2 #calculating number of cor (sum of on triangle of the table)
+    cor.cluster <- rbind(cor.cluster, c(unique(cluster.df$cluster_id)[x], a/b))
+    print(c(x, "/", length(unique(cluster.df$cluster_id))))
+  }
+}
+
+colnames(cor.cluster) <- c("cluster_id", "cor")
+
+cor.cluster$cor %>% min()
+sig.cluster <- cor.cluster %>% filter(cor > 0.5)
+
+list_cor <- c()
+
+for (x in sig.cluster$cluster_id){
+  t <- cluster.df %>% filter(cluster_id == x) %>% select(id)
+  
+  list_cor <- c(list_cor, t[,1])
+}
+
+ggplot(data=cor.cluster, aes(cor.cluster$cor)) + 
+  geom_histogram(color="white") + ylab("Count") + xlab("Average pairwise correlation score") + geom_vline(xintercept=0.5, color = "red", ) +
+  ggtitle("Clusters as measured by Spearman correlation test")
+
+#yet one step further enrichment analysis on the SiV-Cpgs in > 0.5 clusters
+sig.cluster %>% head()
+sig.list <- decluster.df %>% filter(cluster_id %in% sig.cluster$cluster_id) %>% select(id)
+
+
+
+```
+
+
+
+
+
+## GO enrichment analysis again on clustered CpG with in-cluster mean cor of >0
+```{r GO enrichment analysis on declustered data}
+gst.decluster <- gometh(sig.cpg=list_cor, all.cpg=GO.background, collection="GO", array.type="EPIC", prior.prob = T, sig.genes = T, plot.bias=TRUE)
+```
+```{r}
+topGSA(gst.decluster, n=10)
+```
+
+
+
+```{r}
+gstkegg.decluster <- gometh(sig.cpg=list_cor, all.cpg=GO.background, collection="KEGG", array.type="EPIC", prior.prob = T, sig.genes = T, plot.bias=TRUE)
+```
+
+```{r}
+topGSA(gstkegg.decluster, n=10)
+```
+
+```{r}
+
+enrich.kegg.cluster <- topGSA(gstkegg.decluster, n=10) 
+enrich.kegg.cluster <-  enrich.kegg.cluster %>% as.data.frame()
+enrich.kegg.cluster <-  enrich.kegg.cluster %>% arrange(desc(FDR))
+
+enrich.kegg.cluster %>% head()
+
+
+enrich.kegg.cluster$Description <- factor(enrich.kegg.cluster$Description,                                  
+                  levels = enrich.kegg.cluster$Description[order(enrich.kegg.cluster$FDR, decreasing = TRUE)])
+
+enrich.kegg.cluster$FDR_log <- -log10(enrich.kegg.cluster$FDR)
+
+ggplot(enrich.kegg.cluster, aes(x = Description, y = FDR_log)) + geom_bar(stat="identity", fill = "#05C3DE") + 
+  coord_flip() +
+  geom_hline(yintercept=-log10(0.05), linetype="dashed", color = "red") + 
+  ylab("False discovery rate: -log10(FDR)") + 
+  ggtitle("KEGG term development") + 
+  ylim(0,2.2) +xlab("") 
+
+```
+
+#yet one step further enrichment analysis on the SiV-Cpgs in > 0.5 clusters
+```{r}
+gst.decluster.sig <- gometh(sig.cpg=sig.list[,1], all.cpg=GO.background, collection="KEGG", array.type="EPIC", prior.prob = T, sig.genes = T, plot.bias=TRUE)
+
+topGSA(gst.decluster.sig, n=10)
+
+```
+
+
+```{r karyoplote}
+library("karyoploteR")
+library(magrittr)
+
+chro=c("chr1", "chr2", "chr3","chr4","chr5","chr6","chr7","chr8","chr9","chr10","chr11","chr12","chr13", "chr14","chr15","chr16","chr17","chr18","chr19","chr20","chr21","chr22")
+
+kp <- plotKaryotype(genome="hg19", chromosomes=chro, plot.type=1) %>% kpDataBackground() %>%
+    kpPlotRegions(locs.meta, col="#FFAACC") 
+
+```
+
+#function for calculating mean, se, 95% CI from a list
+```{r}
+#function for calculating mean, se, 95% CI from a list
+ci_func <- function(list_input){
+  ranked <- list_input %>% arrange(list_input)
+  list.len <- dim(ranked)[1]
+  upper.b <- floor(list.len*0.975)
+  lower.b <- floor(list.len*0.025)
+  
+  return (c(ranked[upper.b,1], ranked[lower.b,1]))
+}
+
+```
+
+#function that finds out the nearest distance and do bootstrap
+```{r}
+#load manifest before hand, get ready with transposon.gr which is the gr object for erv
+nearestCpG <- function(Cpg.list, dtype, bs.size, transposon.gr) {
+  print(c("===nearestCpG===="))
+  print(dtype)
+  #Get chr, pos, strand info from manifest
+  bg.df <- manifest %>% filter(Name %in% Cpg.list) %>% select(chr, pos, strand)
+  bg.df$end <- bg.df$pos
+  names(bg.df) <- c("chr", "start", "strand", "end")
+  #convert df into a gr object
+  bg.gr <- makeGRangesFromDataFrame(bg.df,
+                           keep.extra.columns=FALSE,
+                           ignore.strand=FALSE,
+                           seqinfo=NULL,
+                           seqnames.field=c("seqnames", "seqname",
+                                            "chromosome", "chrom",
+                                            "chr", "chromosome_name",
+                                            "seqid"),
+                           start.field="start",
+                           end.field=c("end", "stop"),
+                           strand.field="strand",
+                           starts.in.df.are.0based=FALSE)
+  
+  #The subject (in this case bg.gr) is the 
+  #GenomicRanges instance within which the nearest neighbours are found. 
+  #Can be missing, in which case x is also the subject.
+  
+  #Use distanceToNearest function to find out the distance of the nearest erv to each CpG
+  dist.bg <- distanceToNearest(bg.gr, transposon.gr, select=c("all"),ignore.strand=FALSE)
+  #get the distance info from gr object
+  df_ <- mcols(dist.bg) %>% as.data.frame()
+  #binning
+  df_$bin <- ceiling(df_$distance/1000)
+
+  unique.erv.dis <- unique(df_$bin)
+  
+  bin.count <- matrix(ncol = 2, nrow = 0) %>% as.data.frame()
+
+  for (x in unique.erv.dis){
+    if (x == 0){
+      next
+    }
+    temp <- df_ %>% filter(bin <= x) %>% dim()
+    a <- c(x*1000, temp[1])
+    bin.count <- rbind(bin.count, a)
+  }
+  #count is cumulative count
+  names(bin.count) <- c("distance", "count")
+  bin.count <- bin.count %>%  arrange(distance)
+  
+  # bin.count$cumulative <- 0
+  # bin.count[1, 3] <- bin.count[1,2]
+  # 
+  # for (i in seq(2, length(bin.count$count))){
+  #   bin.count[i, 3] <- bin.count[i-1,3] + bin.count[i,2]
+  # }
+  
+  total.count <- bg.gr %>% length()
+  bin.count$cu.percent <- bin.count$count / total.count
+  
+  #prepare a df of 100 row to contain number from 100 bs run and 41 columns to contain value for 41 bins
+  ci.count <- matrix(ncol = 10, nrow=100) %>%  as.data.frame()
+  names(ci.count) <- seq(1000,10000,by=1000)
+
+  #do bootstrapping 100 times
+  for (bs in seq(1, 100)){
+    print(c("bs:",bs,"/ 100", dtype))
+    #randomly selects sample (boostraping)
+    sample_ <- bg.df[sample(nrow(bg.df), bs.size, replace = TRUE), ]
+    #make randomly selected sample into gr object
+    sample.gr <- makeGRangesFromDataFrame(sample_,
+                             keep.extra.columns=FALSE,
+                             ignore.strand=FALSE,
+                             seqinfo=NULL,
+                             seqnames.field=c("seqnames", "seqname",
+                                              "chromosome", "chrom",
+                                              "chr", "chromosome_name",
+                                              "seqid"),
+                             start.field="start",
+                             end.field=c("end", "stop"),
+                             strand.field="strand",
+                             starts.in.df.are.0based=FALSE)
+    #Use distanceToNearest function to find out the distance of the nearest erv to each  bootstrap selected CpG
+    sample.dist.bg <- distanceToNearest(sample.gr, transposon.gr ,ignore.strand=FALSE)
+
+    sample.dist.bg <- as.data.frame(sample.dist.bg)
+
+    #binning distance by the thousands
+    sample.dist.bg$bin <- ceiling(sample.dist.bg$distance/1000)
+    
+    unique.erv.dis <- unique(sample.dist.bg$bin)
+    
+    #get the binned distance and place them into premade df
+    for (x in unique.erv.dis){
+      if (x*1000 %in% seq(1000,10000,by=1000)){
+        r <- which(rownames(ci.count) == bs)
+        c <- which(colnames(ci.count) == toString(x*1000))
+        #make sure the values are cumulative
+        temp <- sample.dist.bg %>% filter(bin <= x) %>% dim()
+        ci.count[r,c] <- temp[1]
+      }
+    }
+
+  }
+  #convert into percentage
+  ci.count <- ci.count / total.count
+  
+  #create empty column for generating mean and ci
+  re.plt <- matrix(ncol=3, nrow=0) %>% as.data.frame()
+  colnames(re.plt) <- c("distance", "upper.b", "lower.b")
+  
+  #use c_function to get the mean and ci
+  for (i in seq(1,length(ci.count))){
+    a <- ci_func(ci.count[i])
+    b <- ci.count[i]
+    d <- b[!is.na(b)] %>% as.data.frame()
+    a <- ci_func(d)
+    
+    if (is.na(a[1])){
+      next
+    }
+    c <- c(as.numeric(colnames(ci.count)[i]), a)
+    re.plt <- rbind(re.plt, c)
+  }
+  
+  re.plt$cu.percent <- bin.count$cu.percent[c(1:dim(re.plt)[1])]
+  
+  re.plt$datatype <- toString(dtype)
+  
+  names(re.plt) <- c("distance", "upper.b", "lower.b", "cu.percent","datatype")
+
+  return (re.plt)
+  
+}
+
+```
+
+#erv nearest cpg function
+```{r}
+#this function only analysing 1000-10000 by 1000 interval, else code needs to be changes a bit
+erv_func <- function(input_file){
+  print(input_file)
+  #getting the erv file into a df from trans file
+  trans <- read.table(input_file,header = FALSE, sep="\t",stringsAsFactors=FALSE, quote="")
+  colnames(trans) <- c("chr", "start", "end", "line", "L", "strand", "L_")
+  #convert the df into gr object
+  transposon.gr <- makeGRangesFromDataFrame(trans,
+                           keep.extra.columns=FALSE,
+                           ignore.strand=FALSE,
+                           seqinfo=NULL,
+                           seqnames.field=c("seqnames", "seqname",
+                                            "chromosome", "chrom",
+                                            "chr", "chromosome_name",
+                                            "seqid"),
+                           start.field="start",
+                           end.field=c("end", "stop"),
+                           strand.field="strand",
+                           starts.in.df.are.0based=FALSE)
+
+  #run function to get the distance of CpG to the nearest erv for background CpGs
+  #776492 here is the total number of CpG in gd
+  re.plt.bg <- nearestCpG(row.names(EPIC.norm.beta.DF), dtype="bg", 776492, transposon.gr)
+  names(re.plt.bg) <- c("distance", "upper.b", "lower.b", "cu.percent","datatype")
+  
+  #run function to get the distance of CpG to the nearest erv for identified HvCpGs
+  #2050 here is the total number of CpG in identified SiV
+  re.plt.hvcpg <- nearestCpG(var.threshold$probes, dtype="hvCpG", 5464, transposon.gr)
+  names(re.plt.hvcpg) <- c("distance", "upper.b", "lower.b", "cu.percent","datatype")
+  
+  #combine two dfs
+  re.plt.all <- rbind(re.plt.bg, re.plt.hvcpg)
+  
+  #double check column names
+  names(re.plt.hvcpg)<- c("distance", "upper.b", "lower.b", "cu.percent","datatype")
+  
+  #plot bar plot
+  ggplot(re.plt.all, aes(x=distance, y=cu.percent, fill=datatype)) + 
+    geom_bar(position=position_dodge(), stat="identity") + 
+    geom_errorbar(aes(ymin = lower.b, ymax = upper.b, group=datatype),position=position_dodge(.9)) +
+    ylim(0,.5) +
+    scale_x_continuous(breaks=seq(1000,10000,1000)) +
+    ggtitle("Nearest transposable element to CpG")
+  
+  return(re.plt.all)
+}
+
+```
+
+
+
+```{r}
+result <- erv_func(file)
+
+ggplot(result, aes(x=distance, y=cu.percent, fill=datatype)) + 
+    geom_bar(position=position_dodge(), stat="identity") + 
+    geom_errorbar(aes(ymin = lower.b, ymax = upper.b, group=datatype),position=position_dodge()) +
+    ylim(0,1) +
+    scale_x_continuous(breaks=seq(1000,10000,1000)) +
+    ggtitle("Nearest transposable element to CpG (LINE.CR1) ")  +
+    xlab("Nearest Distance (bps)") + ylab("% of CpGs located <= x bps from the nearest TE") +
+  scale_fill_manual(values = c("#C0C0C0","#05C3DE"))
+```
+
+```{r}
+file = "/mnt/data/RepeatMasker/regions/hg19.repeat_masker.LINE.bed"
+file1 = "/mnt/data/RepeatMasker/regions/hg19.repeat_masker.LINE.CR1.bed"
+file2 = "/mnt/data/RepeatMasker/regions/hg19.repeat_masker.LINE.Dong-R4.bed"
+file3 = "/mnt/data/RepeatMasker/regions/hg19.repeat_masker.LINE.L1.bed"
+file4 = "/mnt/data/RepeatMasker/regions/hg19.repeat_masker.LINE.L2.bed"
+file5 = "/mnt/data/RepeatMasker/regions/hg19.repeat_masker.LINE.RTE.bed"
+file6 = "/mnt/data/RepeatMasker/regions/hg19.repeat_masker.LINE.RTE-BovB.bed"
+file7 = "/mnt/data/RepeatMasker/regions/hg19.repeat_masker.LTR.all_HERV.bed"
+file8 = "/mnt/data/RepeatMasker/regions/hg19.repeat_masker.LTR.ERV1.bed"
+file9 = "/mnt/data/RepeatMasker/regions/hg19.repeat_masker.LTR.ERV.bed"
+file10 = "/mnt/data/RepeatMasker/regions/hg19.repeat_masker.LTR.ERVK.bed"
+file11 = "/mnt/data/RepeatMasker/regions/hg19.repeat_masker.LTR.ERVL.bed"
+file12 = "/mnt/data/RepeatMasker/regions/hg19.repeat_masker.LTR.ERVL-MaLR.bed"
+file13 = "/mnt/data/RepeatMasker/regions/hg19.repeat_masker.SINE.bed"
+file14 = "/mnt/data/RepeatMasker/regions/hg19.repeat_masker.LTR.Gypsy.bed"
+file15 = "/mnt/data/RepeatMasker/regions/hg19.repeat_masker.LTR.LTR.bed"
+file16 = "/mnt/data/RepeatMasker/regions/hg19.repeat_masker.SINE.Alu.bed"
+file17 = "/mnt/data/RepeatMasker/regions/hg19.repeat_masker.SINE.Deu.bed"
+file18 = "/mnt/data/RepeatMasker/regions/hg19.repeat_masker.SINE.MIR.bed"
+file19 = "/mnt/data/RepeatMasker/regions/hg19.repeat_masker.SINE.SINE.bed"
+file20 = "/mnt/data/RepeatMasker/regions/hg19.repeat_masker.SINE.tRNA.bed"
+
+```
+
+```{r}
+result1 <- erv_func(file1)
+
+ggplot(result, aes(x=distance, y=cu.percent, fill=datatype)) + 
+    geom_bar(position=position_dodge(), stat="identity") + 
+    geom_errorbar(aes(ymin = lower.b, ymax = upper.b, group=datatype),position=position_dodge()) +
+    ylim(0,1) +
+    scale_x_continuous(breaks=seq(1000,10000,1000)) +
+    ggtitle("Nearest transposable element to CpG (LINE.CR1) ")  +
+    xlab("Nearest Distance (bps)") + ylab("% of CpGs located <= x bps from the nearest TE") +       
+    scale_fill_manual(values = c("#C0C0C0","#05C3DE"))
+```
+
+
+```{r}
+result2 <- erv_func(file2)
+```
+
+
+```{r}
+result3 <- erv_func(file3)#been run
+ggplot(result3, aes(x=distance, y=cu.percent, fill=datatype)) + 
+    geom_bar(position=position_dodge(), stat="identity") + 
+    geom_errorbar(aes(ymin = lower.b, ymax = upper.b, group=datatype),position=position_dodge()) +
+    ylim(0,1) +
+    scale_x_continuous(breaks=seq(1000,10000,1000)) +
+    ggtitle("Nearest transposable element to CpG (LINE.L1) ")  +
+    xlab("Nearest Distance (bps)") + ylab("% of CpGs located <= x bps from the nearest TE") +       
+    scale_fill_manual(values = c("#C0C0C0","#05C3DE"))
+```
+
+
+```{r}
+result4 <- erv_func(file4)#been run
+ggplot(result4, aes(x=distance, y=cu.percent, fill=datatype)) + 
+    geom_bar(position=position_dodge(), stat="identity") + 
+    geom_errorbar(aes(ymin = lower.b, ymax = upper.b, group=datatype),position=position_dodge()) +
+    ylim(0,1) +
+    scale_x_continuous(breaks=seq(1000,10000,1000)) +
+    ggtitle("Nearest transposable element to CpG (LINE.L2) ")  +
+    xlab("Nearest Distance (bps)") + ylab("% of CpGs located <= x bps from the nearest TE") +       
+    scale_fill_manual(values = c("#C0C0C0","#05C3DE"))
+```
+
+
+```{r}
+result5 <- erv_func(file5)#been run
+
+ggplot(result5, aes(x=distance, y=cu.percent, fill=datatype)) + 
+    geom_bar(position=position_dodge(), stat="identity") + 
+    geom_errorbar(aes(ymin = lower.b, ymax = upper.b, group=datatype),position=position_dodge()) +
+    ylim(0,0.05) +
+    scale_x_continuous(breaks=seq(1000,10000,1000)) +
+    ggtitle("Nearest transposable element to CpG (LINE.RTE) ")  +
+    xlab("Nearest Distance (bps)") + ylab("% of CpGs located <= x bps from the nearest TE") +       
+    scale_fill_manual(values = c("#C0C0C0","#05C3DE"))
+```
+
+
+```{r}
+result6 <- erv_func(file6)
+```
+
+
+```{r}
+result7 <- erv_func(file7)
+
+ggplot(result7, aes(x=distance, y=cu.percent, fill=datatype)) + 
+    geom_bar(position=position_dodge(), stat="identity") + 
+    geom_errorbar(aes(ymin = lower.b, ymax = upper.b, group=datatype),position=position_dodge()) +
+    ylim(0,0.035) +
+    scale_x_continuous(breaks=seq(1000,10000,1000)) +
+    ggtitle("Nearest transposable element to CpG (LTR.all_HERV) ") +
+    xlab("Nearest Distance (bps)") + ylab("% of CpGs located <= x bps from the nearest TE")  + 
+    scale_fill_manual(values = c("#C0C0C0","#05C3DE"))
+```
+
+```{r}
+result8 <-erv_func(file8)
+ggplot(result8, aes(x=distance, y=cu.percent, fill=datatype)) + 
+    geom_bar(position=position_dodge(), stat="identity") + 
+    geom_errorbar(aes(ymin = lower.b, ymax = upper.b, group=datatype),position=position_dodge()) +
+    ylim(0,1) +
+    scale_x_continuous(breaks=seq(1000,10000,1000)) +
+    ggtitle("Nearest transposable element to CpG (LTR.ERV1) ") +
+    xlab("Nearest Distance (bps)") + ylab("% of CpGs located <= x bps from the nearest TE") +
+    scale_fill_manual(values = c("#C0C0C0","#05C3DE"))
+```
+
+```{r}
+result9 <- erv_func(file9)
+```
+
+
+```{r}
+
+
+result10 <- erv_func(file10)
+ggplot(result10, aes(x=distance, y=cu.percent, fill=datatype)) + 
+    geom_bar(position=position_dodge(), stat="identity") + 
+    geom_errorbar(aes(ymin = lower.b, ymax = upper.b, group=datatype),position=position_dodge()) +
+    ylim(0,0.038) +
+    scale_x_continuous(breaks=seq(1000,10000,1000)) +
+    ggtitle("Nearest transposable element to CpG (LTR.ERVK) ") +
+    xlab("Nearest Distance (bps)") + ylab("% of CpGs located <= x bps from the nearest TE") +
+    scale_fill_manual(values = c("#C0C0C0","#05C3DE")) + theme(axis.text=element_text(size=12),
+        axis.title=element_text(size=14,face="bold"))
+
+```
+
+```{r}
+result11 <- erv_func(file11)
+result12 <- erv_func(file12)
+```
+
+
+```{r}
+result13 <-erv_func(file13)
+ggplot(result13, aes(x=distance, y=cu.percent, fill=datatype)) + 
+    geom_bar(position=position_dodge(), stat="identity") + 
+    geom_errorbar(aes(ymin = lower.b, ymax = upper.b, group=datatype),position=position_dodge()) +
+    ylim(0,1) +
+    scale_x_continuous(breaks=seq(1000,10000,1000)) +
+    ggtitle("Nearest transposable element to CpG (SINE) ") +
+    scale_fill_manual(values = c("#C0C0C0","#05C3DE")) + xlab("Nearest Distance (bps)") + ylab("% of CpGs located <= x bps from the nearest ERV")
+```
+
+```{r}
+result14 <- erv_func(file14) #been run
+ggplot(result14, aes(x=distance, y=cu.percent, fill=datatype)) + 
+    geom_bar(position=position_dodge(), stat="identity") + 
+    geom_errorbar(aes(ymin = lower.b, ymax = upper.b, group=datatype),position=position_dodge()) +
+    ylim(0,0.03) +
+    scale_x_continuous(breaks=seq(1000,10000,1000)) +
+    ggtitle("Nearest transposable element to CpG (LINE.CR1) ")  +
+    xlab("Nearest Distance (bps)") + ylab("% of CpGs located <= x bps from the nearest ERV") +       
+    scale_fill_manual(values = c("#C0C0C0","#05C3DE"))
+```
+
+
+```{r}
+result15 <- erv_func(file15)
+
+ggplot(result15, aes(x=distance, y=cu.percent, fill=datatype)) + 
+    geom_bar(position=position_dodge(), stat="identity") + 
+    geom_errorbar(aes(ymin = lower.b, ymax = upper.b, group=datatype),position=position_dodge()) +
+    ylim(0,0.007) +
+    scale_x_continuous(breaks=seq(1000,10000,1000)) +
+    ggtitle("Nearest transposable element to CpG (LTR) ")  +
+    xlab("Nearest Distance (bps)") + ylab("% of CpGs located <= x bps from the nearest ERV") +       
+    scale_fill_manual(values = c("#C0C0C0","#05C3DE"))
+
+
+
+
+
+```
+
+```{r}
+
+result16 <- erv_func(file16)
+
+ggplot(result16, aes(x=distance, y=cu.percent, fill=datatype)) + 
+    geom_bar(position=position_dodge(), stat="identity") + 
+    geom_errorbar(aes(ymin = lower.b, ymax = upper.b, group=datatype),position=position_dodge()) +
+    ylim(0,1) +
+    scale_x_continuous(breaks=seq(1000,10000,1000)) +
+    ggtitle("Nearest transposable element to CpG (SINE.Alu) ")  +
+    xlab("Nearest Distance (bps)") + ylab("% of CpGs located <= x bps from the nearest ERV") +       
+    scale_fill_manual(values = c("#C0C0C0","#05C3DE"))
+```
+
+```{r}
+result17 <- erv_func(file17) #long running time
+
+result18 <- erv_func(file18) #long running time
+result19 <- erv_func(file19) #long running time
+result20 <- erv_func(file20) #warning
+```
+
+
+```{r}
+head(result8)
+```
+
+#Variation of the the function that calculates TE enrichment for declustered SiV-CpGs
+#this function only analysing 1000-10000 by 1000 interval, else code needs to be changes a bit
+```{r}
+#run function to get the distance of CpG to the nearest erv for background CpGs
+#776492 here is the total number of CpG in gd
+re.plt.bg <- nearestCpG(row.names(EPIC.norm.beta.DF), dtype="Background", 776492, transposon.gr) #doesn't need to be run every time
+names(re.plt.bg) <- c("distance", "upper.b", "lower.b", "cu.percent","datatype")
+
+erv_func.decluster <- function(input_file){
+  print(input_file)
+  #getting the erv file into a df from trans file
+  trans <- read.table(input_file,header = FALSE, sep="\t",stringsAsFactors=FALSE, quote="")
+  colnames(trans) <- c("chr", "start", "end", "line", "L", "strand", "L_")
+  #convert the df into gr object
+  transposon.gr <- makeGRangesFromDataFrame(trans,
+                           keep.extra.columns=FALSE,
+                           ignore.strand=FALSE,
+                           seqinfo=NULL,
+                           seqnames.field=c("seqnames", "seqname",
+                                            "chromosome", "chrom",
+                                            "chr", "chromosome_name",
+                                            "seqid"),
+                           start.field="start",
+                           end.field=c("end", "stop"),
+                           strand.field="strand",
+                           starts.in.df.are.0based=FALSE)
+  
+  #run function to get the distance of CpG to the nearest erv for identified HvCpGs
+  #2050 here is the total number of CpG in identified SiV
+  re.plt.hvcpg <- nearestCpG(CpG_decluster, dtype="SiVCpG", 907, transposon.gr)
+  names(re.plt.hvcpg) <- c("distance", "upper.b", "lower.b", "cu.percent","datatype")
+  
+  #combine two dfs
+  re.plt.all <- rbind(re.plt.bg, re.plt.hvcpg)
+  
+  #double check column names
+  names(re.plt.hvcpg)<- c("distance", "upper.b", "lower.b", "cu.percent","datatype")
+  
+  #plot bar plot
+  
+  ggplot(re.plt.all, aes(x=distance, y=cu.percent, fill=datatype)) + 
+    geom_bar(position=position_dodge(), stat="identity") + 
+    geom_errorbar(aes(ymin = lower.b, ymax = upper.b, group=datatype),position=position_dodge()) +
+    ylim(0,0.04) +
+    scale_x_continuous(breaks=seq(1000,10000,1000)) +
+    ggtitle("Nearest transposable element to CpG (LTR.all_HERV) ")  +
+    xlab("Nearest Distance (bps)") + ylab("% of CpGs located <= x bps from the nearest ERV") +
+    scale_fill_manual(values = c("#C0C0C0","#05C3DE"))
+  
+  return(re.plt.all)
+}
+
+```
+
+
+```{r}
+decluster.result7 <- erv_func.decluster(file7)
+
+  
+  ggplot(decluster.result7 , aes(x=distance, y=cu.percent, fill=datatype)) + 
+    geom_bar(position=position_dodge(), stat="identity") + 
+    geom_errorbar(aes(ymin = lower.b, ymax = upper.b, group=datatype),position=position_dodge()) +
+    ylim(0,0.04) +
+    scale_x_continuous(breaks=seq(1000,10000,1000)) +
+    ggtitle("Nearest transposable element to CpG (LTR.HERV) ")  +
+    xlab("Nearest Distance (bps)") + ylab("% of CpGs located <= x bps from the nearest ERV") +
+    scale_fill_manual(values = c("#C0C0C0","#05C3DE"))
+
+  
+```
+
+```{r}
+decluster.result10 <- erv_func.decluster(file10)
+
+  
+  ggplot(decluster.result10 , aes(x=distance, y=cu.percent, fill=datatype)) + 
+    geom_bar(position=position_dodge(), stat="identity") + 
+    geom_errorbar(aes(ymin = lower.b, ymax = upper.b, group=datatype),position=position_dodge()) +
+    ylim(0,0.04) +
+    scale_x_continuous(breaks=seq(1000,10000,1000)) +
+    ggtitle("Nearest transposable element to CpG (LTR.ERV1) ")  +
+    xlab("Nearest Distance (bps)") + ylab("% of CpGs located <= x bps from the nearest ERV") +
+    scale_fill_manual(values = c("#C0C0C0","#05C3DE"))
+  
+
+```
+```{r}
+decluster.result8 <- erv_func.decluster(file8)
+
+  
+  ggplot(decluster.result8 , aes(x=distance, y=cu.percent, fill=datatype)) + 
+    geom_bar(position=position_dodge(), stat="identity") + 
+    geom_errorbar(aes(ymin = lower.b, ymax = upper.b, group=datatype),position=position_dodge()) +
+    ylim(0,0.04) +
+    scale_x_continuous(breaks=seq(1000,10000,1000)) +
+    ggtitle("Nearest transposable element to CpG (LTR.ERVK) ")  +
+    xlab("Nearest Distance (bps)") + ylab("% of CpGs located <= x bps from the nearest ERV") +
+    scale_fill_manual(values = c("#C0C0C0","#05C3DE"))
+```
+
+
+
+
+```{r}
+decluster.result7 <- erv_func.decluster(file7)
+ggplot(decluster.result7, aes(x=distance, y=cu.percent, fill=datatype)) + 
+    geom_bar(position=position_dodge(), stat="identity") + 
+    geom_errorbar(aes(ymin = lower.b, ymax = upper.b, group=datatype),position=position_dodge()) +
+    ylim(0,0.037) +
+    scale_x_continuous(breaks=seq(1000,10000,1000)) +
+    ggtitle("Nearest transposable element to CpG (LTR.ERVK) ") +
+    xlab("Nearest Distance (bps)") + ylab("% of CpGs located <= x bps from the nearest TE") +
+    scale_fill_manual(values = c("#C0C0C0","#05C3DE"))
+
+```
+
+
+```{r}
+decluster.result10 <- erv_func.decluster(file10)
+
+ggplot(decluster.result10, aes(x=distance, y=cu.percent, fill=datatype)) + 
+    geom_bar(position=position_dodge(), stat="identity") + 
+    geom_errorbar(aes(ymin = lower.b, ymax = upper.b, group=datatype),position=position_dodge()) +
+    ylim(0,0.035) +
+    scale_x_continuous(breaks=seq(1000,10000,1000)) +
+    ggtitle("Nearest transposable element to CpG (LTR.all_HERV) ") +
+    xlab("Nearest Distance (bps)") + ylab("% of CpGs located <= x bps from the nearest TE")  + 
+    scale_fill_manual(values = c("#C0C0C0","#05C3DE"))
+```
+
+
+
+#modified nearestCpG function to analyse effect of interindividual variation on distance to nearest TE
+```{r}
+
+#load manifest before hand, get ready with transposon.gr which is the gr object for erv
+nearestCpG.mod <- function(Cpg.list, dtype, bs.size, transposon.gr) {
+  print(c("===nearestCpG====", dtype))
+  #Get chr, pos, strand info from manifest
+  bg.df <- manifest %>% filter(Name %in% Cpg.list) %>% select(chr, pos, strand)
+  bg.df$end <- bg.df$pos
+  names(bg.df) <- c("chr", "start", "strand", "end")
+  #convert df into a gr object
+  bg.gr <- makeGRangesFromDataFrame(bg.df,
+                           keep.extra.columns=FALSE,
+                           ignore.strand=FALSE,
+                           seqinfo=NULL,
+                           seqnames.field=c("seqnames", "seqname",
+                                            "chromosome", "chrom",
+                                            "chr", "chromosome_name",
+                                            "seqid"),
+                           start.field="start",
+                           end.field=c("end", "stop"),
+                           strand.field="strand",
+                           starts.in.df.are.0based=FALSE)
+  
+  #The subject (in this case bg.gr) is the 
+  #GenomicRanges instance within which the nearest neighbours are found. 
+  #Can be missing, in which case x is also the subject.
+  
+  #Use distanceToNearest function to find out the distance of the nearest erv to each CpG
+  dist.bg <- distanceToNearest(bg.gr, transposon.gr, select=c("all"),ignore.strand=FALSE)
+  #get the distance info from gr object
+  df_ <- mcols(dist.bg) %>% as.data.frame()
+  #binning
+  df_10k <- df_ %>% filter(distance < 100000)
+  
+  return (c(dim(df_10k)[1]/dim(df_)[1], dtype))
+  
+}
+```
+
+#modified erv function to analyse effect of interindividual variation on distance to nearest TE
+```{r}
+#modified erv function to analyse effect of interindividual variation on distance to nearest TE
+
+#this function only analysing 1000-10000 by 1000 interval, else code needs to be changes a bit
+erv_func.mod <- function(input_file, SiVCpg, datatype){
+  #getting the erv file into a df from trans file
+  trans <- read.table(input_file,header = FALSE, sep="\t",stringsAsFactors=FALSE, quote="")
+  colnames(trans) <- c("chr", "start", "end", "line", "L", "strand", "L_")
+  #convert the df into gr object
+  transposon.gr <- makeGRangesFromDataFrame(trans,
+                           keep.extra.columns=FALSE,
+                           ignore.strand=FALSE,
+                           seqinfo=NULL,
+                           seqnames.field=c("seqnames", "seqname",
+                                            "chromosome", "chrom",
+                                            "chr", "chromosome_name",
+                                            "seqid"),
+                           start.field="start",
+                           end.field=c("end", "stop"),
+                           strand.field="strand",
+                           starts.in.df.are.0based=FALSE)
+
+  #run function to get the distance of CpG to the nearest erv for background CpGs
+  #776492 here is the total number of CpG in gd
+  re.plt.bg <- nearestCpG.mod(row.names(EPIC.norm.beta.DF), dtype=paste(datatype,"bg"), 776492, transposon.gr)
+  print("re.plt.bg")
+  #run function to get the distance of CpG to the nearest erv for identified HvCpGs
+  #2050 here is the total number of CpG in identified SiV
+  re.plt.hvcpg <- nearestCpG.mod(SiVCpg, dtype=paste(datatype, "SiVCpG"), dim(SiVCpg)[1], transposon.gr)
+  print("re.plt.hvcbg")
+  #combine two dfs
+  re.plt.all <- rbind(re.plt.bg, re.plt.hvcpg)
+  
+  return(re.plt.all)
+}
+```
+
+#add label of interindividual variation in the df
+```{r}
+#df containing CpG name and interindividual variaiton and inter germlayer variaiton
+var.threshold <- var.threshold %>% arrange(desc(interindividual_var))
+var.threshold.bu <- var.threshold
+
+label <- c("0.8-1.0", "0.6-0.8", "0.4-0.6", "0.2-0.4") #0.0-0.2 value range doesn't have any SiV-CpGs so it is not included here
+bound <- c(1.0,0.8,0.6,0.4,0.2)
+
+threshold.bound <- matrix(ncol = 2, nrow = 0) %>% as.data.frame()
+
+for (i in seq(1, length(label))){
+  a = i+1
+  temp <- var.threshold %>% filter(interindividual_var <= bound[i]) %>% filter(interindividual_var > bound[a])
+  temp <- temp %>% mutate(boundary = label[i])
+  threshold.bound <- rbind(threshold.bound, temp)
+  
+}
+
+
+```
+
+#calculating percentage difference between siv cpg and bg cpg in terms of TE enrichment (count to nearest TE with x bps)
+```{r}
+
+result.mod <- matrix(ncol=4, nrow=0) %>% as.data.frame()
+
+for (f in c(file3, file8, file10)){
+  print(f)
+  for (x in label){
+    print(c(f,x))
+    temp_ <- threshold.bound %>% filter(boundary == x) %>% select(probes)
+    result.temp <- erv_func.mod(f, temp_[,1], x)
+    result.add <- c(result.temp[1,], result.temp[2,])
+    result.mod <- rbind(result.mod, result.add)
+  }
+}
+
+view(result.mod)
+colnames(result.mod) <- c("bg", "bg-label", "SiV", "SiV-label")
+result.mod$SiV <- as.numeric(result.mod$SiV)
+result.mod$bg <- as.numeric(result.mod$bg)
+
+result.mod$difference <- abs(result.mod$SiV - result.mod$bg)
+
+result.mod$mean <- mean(result.mod$SiV, result.mod$bg))
+
+result.percent_diff <- result.mod$difference / result.mod$mean 
+
+TE <- c("LINE.L1","LINE.L1","LINE.L1","LINE.L1","LTR.ERV1","LTR.ERV1","LTR.ERV1","LTR.ERV1","LTR.ERVK","LTR.ERVK","LTR.ERVK","LTR.ERVK")
+
+list_ <- strsplit(result.mod$`bg-label`, split = " ")
+
+result.mod <- result.mod %>% separate(`bg-label`, c("A", "B"), " ")
+
+result.mod <- na.omit(result.mod)
+
+ggplot(result.mod, aes(x = A, y=difference[1:12], fill=TE)) + 
+    geom_bar(position=position_dodge(), stat="identity") + 
+    ylim(0,0.1) +
+    ggtitle("Percentage of nearest transposable element difference \n between background and SiV CpG as influenced \n by interindividual variation  within 10kbps range") + 
+    ylab("% nearest TE count difference") + xlab("Interindividual variation")+
+    scale_fill_discrete(name = "Interindividual variation")
+
+
+
+head(result.mod)
+view(result.mod)
+
+
+```
+
+```{r}
+
+```
+
+
+#Modified function for calculating raw number
+```{r}
+nearestCpG.mod.count <- function(Cpg.list, dtype, bs.size, transposon.gr) {
+  print(c("===nearestCpG====", dtype))
+  #Get chr, pos, strand info from manifest
+  bg.df <- manifest %>% filter(Name %in% Cpg.list) %>% select(chr, pos, strand)
+  bg.df$end <- bg.df$pos
+  names(bg.df) <- c("chr", "start", "strand", "end")
+  #convert df into a gr object
+  bg.gr <- makeGRangesFromDataFrame(bg.df,
+                           keep.extra.columns=FALSE,
+                           ignore.strand=FALSE,
+                           seqinfo=NULL,
+                           seqnames.field=c("seqnames", "seqname",
+                                            "chromosome", "chrom",
+                                            "chr", "chromosome_name",
+                                            "seqid"),
+                           start.field="start",
+                           end.field=c("end", "stop"),
+                           strand.field="strand",
+                           starts.in.df.are.0based=FALSE)
+  
+  #The subject (in this case bg.gr) is the 
+  #GenomicRanges instance within which the nearest neighbours are found. 
+  #Can be missing, in which case x is also the subject.
+  
+  #Use distanceToNearest function to find out the distance of the nearest erv to each CpG
+  dist.bg <- distanceToNearest(bg.gr, transposon.gr, select=c("all"),ignore.strand=FALSE)
+  #get the distance info from gr object
+  df_ <- mcols(dist.bg) %>% as.data.frame()
+  #binning
+  df_10k <- df_ %>% filter(distance < 100000)
+  
+  return (c(dim(df_10k)[1], dtype))
+  
+}
+```
+
+```{r}
+nearestCpG.mod.count <- function(Cpg.list, dtype, bs.size, transposon.gr) {
+  
+  Cpg.list <- 
+  dtype <- 
+  bs.size <- 
+
+  print(c("===nearestCpG====", dtype))
+  #Get chr, pos, strand info from manifest
+  bg.df <- manifest %>% filter(Name %in% Cpg.list) %>% select(chr, pos, strand)
+  bg.df$end <- bg.df$pos
+  names(bg.df) <- c("chr", "start", "strand", "end")
+  #convert df into a gr object
+  bg.gr <- makeGRangesFromDataFrame(bg.df,
+                           keep.extra.columns=FALSE,
+                           ignore.strand=FALSE,
+                           seqinfo=NULL,
+                           seqnames.field=c("seqnames", "seqname",
+                                            "chromosome", "chrom",
+                                            "chr", "chromosome_name",
+                                            "seqid"),
+                           start.field="start",
+                           end.field=c("end", "stop"),
+                           strand.field="strand",
+                           starts.in.df.are.0based=FALSE)
+  
+  #The subject (in this case bg.gr) is the 
+  #GenomicRanges instance within which the nearest neighbours are found. 
+  #Can be missing, in which case x is also the subject.
+  
+  #Use distanceToNearest function to find out the distance of the nearest erv to each CpG
+  dist.bg <- distanceToNearest(bg.gr, transposon.gr, select=c("all"),ignore.strand=FALSE)
+  #get the distance info from gr object
+  df_ <- mcols(dist.bg) %>% as.data.frame()
+  #binning
+  df_10k <- df_ %>% filter(distance < 100000)
+  
+  return (c(dim(df_10k)[1], dtype))
+```
+
+#calculating TE enrichment in terms of raw count of siv cpg to nearest TE within  x bps against interindividual variation
+```{r}
+
+result.mod.count <- matrix(ncol=2, nrow=0) %>% as.data.frame()
+
+for (f in c(file3, file8, file10)){
+  print(f)
+  trans <- read.table(f,header = FALSE, sep="\t",stringsAsFactors=FALSE, quote="")
+  colnames(trans) <- c("chr", "start", "end", "line", "L", "strand", "L_")
+  #convert the df into gr object
+  transposon.gr <- makeGRangesFromDataFrame(trans,
+                           keep.extra.columns=FALSE,
+                           ignore.strand=FALSE,
+                           seqinfo=NULL,
+                           seqnames.field=c("seqnames", "seqname",
+                                            "chromosome", "chrom",
+                                            "chr", "chromosome_name",
+                                            "seqid"),
+                           start.field="start",
+                           end.field=c("end", "stop"),
+                           strand.field="strand",
+                           starts.in.df.are.0based=FALSE)
+
+  for (x in label){
+    print(x)
+    temp_ <- threshold.bound %>% filter(boundary == x) %>% select(probes)
+    result.temp <- nearestCpG.mod.count(temp_[,1], dtype=x, dim(temp_)[1], transposon.gr)
+
+    result.mod.count <- rbind(result.mod.count, result.temp)
+  }
+}
+
+
+colnames(result.mod.count) <- c("Count", "Interindividual_var")
+
+result.mod.count$Count <- as.numeric(result.mod.count$Count)
+
+result.mod.count$TE <- c("LINE.L1","LINE.L1","LINE.L1","LINE.L1","LTR.ERV1","LTR.ERV1","LTR.ERV1","LTR.ERV1","LTR.ERVK","LTR.ERVK","LTR.ERVK","LTR.ERVK")
+
+ggplot(result.mod.count, aes(x = Interindividual_var, y=Count, fill=TE)) + 
+    geom_bar(position=position_dodge(), stat="identity") + 
+    ylim(0,4300) +
+    ggtitle("Effect of interindividual variation on number of CpG with the nearest TE with in 10kpbs") + 
+    ylab("Number of CpG with nearest TE within 10kbps") + xlab("Interindividual variation") +
+    scale_fill_discrete(name = "TE type")
+
+
+head(result.mod.count)
+
+
+```
+
+
+```{r}
+head(beta.adj)
+
+siv_CpG.mean <- beta.adj %>% filter(row.names(beta.adj) %in% var.threshold$probes)
+
+siv_CpG.mean1 <- siv_CpG.mean %>% rowMeans()
+siv_CpG.mean1 %>% length()
+siv_CpG.mean$mean <- siv_CpG.mean1
+
+siv_CpG.mean2 <- cbind(row.names(siv_CpG.mean),siv_CpG.mean$mean) %>% as.data.frame()
+colnames(siv_CpG.mean2) <- c("probes", "mean")
+
+label1 <- c("0.8-1.0", "0.6-0.8", "0.4-0.6", "0.2-0.4","0.0-0.2")
+bound1 <- c(1.0,0.8,0.6,0.4,0.2,0.0)
+
+threshold.bound1 <- matrix(ncol = 3, nrow = 0) %>% as.data.frame()
+
+for (i in seq(1, length(label1))){
+  a = i+1
+  temp <- siv_CpG.mean2 %>% filter(mean <= bound1[i]) %>% filter(mean > bound1[a])
+  temp <- temp %>% mutate(boundary = label1[i])
+  print(temp)
+  threshold.bound1 <- rbind(threshold.bound1, temp)
+}
+
+
+
+
+
+
+
+```
+# percentage difference in TE enrichment against (averaged) beta value
+```{r}
+result.mod1 <- matrix(ncol=4, nrow=0) %>% as.data.frame()
+
+for (f in c(file3, file8, file10)){
+  print(f)
+  for (x in label1){
+    print(c(f,x))
+    temp_ <- threshold.bound1 %>% filter(boundary == x) %>% select(probes)
+    result.temp <- erv_func.mod(f, temp_[,1], x)
+    result.add1 <- c(result.temp[1,], result.temp[2,])
+    result.mod1 <- rbind(result.mod1, result.add1)
+  }
+}
+
+view(result.mod1)
+colnames(result.mod1) <- c("bg", "bg-label", "SiV", "SiV-label")
+result.mod1$SiV <- as.numeric(result.mod1$SiV)
+result.mod1$bg <- as.numeric(result.mod1$bg)
+
+result.mod1$difference <- abs(result.mod1$SiV - result.mod1$bg)
+mean(cbind(result.mod1$SiV, result.mod1$bg))
+# result.mod1$mean <- rowMeans(cbind(result.mod1$SiV, result.mod1$bg))
+# 
+# result.percent_diff <- result.mod1$difference / result.mod1$mean 
+
+TE1 <- c("LINE.L1","LINE.L1","LINE.L1","LINE.L1","LINE.L1","LTR.ERV1","LTR.ERV1","LTR.ERV1","LTR.ERV1","LTR.ERV1","LTR.ERVK","LTR.ERVK","LTR.ERVK","LTR.ERVK","LTR.ERVK")#5 times each
+
+result.add1 <- cbind(result.add1,TE1)
+list_ <- strsplit(result.mod1$`bg-label`, split = " ")
+
+result.mod1 <- result.mod1 %>% separate(`bg-label`, c("A", "B"), " ")
+
+result.mod1 <- na.omit(result.mod1)
+
+ggplot(result.mod1, aes(x = A, y=difference[1:15], fill=TE)) + 
+    geom_bar(position=position_dodge(), stat="identity") + 
+    ylim(0,0.075) +
+    ggtitle("Percentage of nearest transposable element difference \n between background and SiV CpG as influenced \n by mean methylation beta value  within 10kbps range") + 
+    ylab("% nearest TE count difference") + xlab("Mean beta value across all sample")+
+    scale_fill_discrete(name = "TE type")
+
+
+
+head(result.mod1)
+view(result.mod)
+
+```
+#calculating TE enrichment in terms of raw count of siv cpg to nearest TE within  x bps against methylation beta value
+```{r}
+result.mod.count1 <- matrix(ncol=2, nrow=0) %>% as.data.frame()
+
+for (f in c(file3, file8, file10)){
+  print(f)
+  trans <- read.table(f,header = FALSE, sep="\t",stringsAsFactors=FALSE, quote="")
+  colnames(trans) <- c("chr", "start", "end", "line", "L", "strand", "L_")
+  #convert the df into gr object
+  transposon.gr <- makeGRangesFromDataFrame(trans,
+                           keep.extra.columns=FALSE,
+                           ignore.strand=FALSE,
+                           seqinfo=NULL,
+                           seqnames.field=c("seqnames", "seqname",
+                                            "chromosome", "chrom",
+                                            "chr", "chromosome_name",
+                                            "seqid"),
+                           start.field="start",
+                           end.field=c("end", "stop"),
+                           strand.field="strand",
+                           starts.in.df.are.0based=FALSE)
+
+  for (x in label1){
+    print(x)
+    temp_ <- threshold.bound1 %>% filter(boundary == x) %>% select(probes)
+    result.temp <- nearestCpG.mod.count(temp_[,1], dtype=x, dim(temp_)[1], transposon.gr)
+
+    result.mod.count1 <- rbind(result.mod.count1, result.temp)
+  }
+}
+
+colnames(result.mod.count1) <- c("Count", "beta")
+
+result.mod.count1$Count <- as.numeric(result.mod.count1$Count)
+
+result.mod.count1$TE <- c("LINE.L1","LINE.L1","LINE.L1","LINE.L1","LINE.L1","LTR.ERV1","LTR.ERV1","LTR.ERV1","LTR.ERV1","LTR.ERV1","LTR.ERVK","LTR.ERVK","LTR.ERVK","LTR.ERVK","LTR.ERVK") #5 times each
+
+
+ggplot(result.mod.count1, aes(x = beta, y=Count, fill=TE)) + 
+    geom_bar(position=position_dodge(), stat="identity") + 
+    # ylim(0,6000) +
+    ggtitle("Effect of methylation beta value on number of CpG with the nearest TE with in 10kpbs") + 
+    ylab("Number of CpG with nearest TE within 10kbps") + xlab("Mean beta value across all sample") +
+    scale_fill_discrete(name = "TE type")
+
+
+head(result.mod.count)
+
+
+```
+
+
+
